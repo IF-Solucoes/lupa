@@ -396,6 +396,10 @@ def command_search(args):
     server = Server(config.resolve_index_root(os.environ, env))
     filters = {key: getattr(args, key) for key in ("kind", "medium", "orientation")
                if getattr(args, key, None)}
+    # The catalog stores has_text as a JSON boolean and the filter is an equality
+    # test, so the string "false" would quietly match nothing at all.
+    if getattr(args, "has_text", None) is not None:
+        filters["has_text"] = args.has_text == "true"
     print(server.tool_search({"query": args.query, "collection": args.collection,
                               "limit": args.limit, **filters}))
 
@@ -466,6 +470,13 @@ def main(argv=None):
     finder.add_argument("--kind", choices=caption.KINDS)
     finder.add_argument("--medium", choices=caption.MEDIUMS)
     finder.add_argument("--orientation", choices=("portrait", "landscape", "square"))
+    # Two spellings on purpose: `has_text` is how the field is written in the
+    # catalog, in the schema and in the MCP, and hyphens are what every other
+    # flag here uses. Whoever copies either one gets a search, not a parse error.
+    finder.add_argument("--has-text", "--has_text", dest="has_text",
+                        choices=("true", "false"),
+                        help="true keeps only images with text baked in, "
+                             "false only the clean ones")
     finder.add_argument("--limit", type=int, default=15)
 
     sub.add_parser("status", help="indexed collections")

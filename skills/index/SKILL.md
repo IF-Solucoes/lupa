@@ -28,8 +28,21 @@ direction. Judging fitness belongs to the consuming skill.
 ## One command, and the user needs to know nothing
 
 ```bash
-python3 -m lupa index <target>
+python -m lupa index <target>
 ```
+
+**Run it from the folder that holds the `lupa/` package.** There is no installed
+console script: `python -m lupa` only finds the package when it sits in the current
+directory, and from anywhere else it dies with `No module named lupa`.
+
+| where you are | what to run first |
+|---|---|
+| the plugin is installed | `cd` into the plugin root — the folder holding `lupa/`, `server/` and `skills/`, two levels above the directory this skill was loaded from |
+| a checkout of the repository | `cd` into the repository root |
+
+Always spell the interpreter `python`. The versioned alias — the same word with a
+`3` on the end — is, on Windows, the Microsoft Store stub: it prints an
+advertisement, runs nothing, and says so in a way that reads like success.
 
 The target takes any of these forms. Do not ask the user which one they have —
 just pass along whatever they said:
@@ -51,8 +64,8 @@ Before any spending, the command prints a diagnosis and a plan:
 - **`✗` (blocker)** — it stopped and spent nothing. The message itself carries the
   fix, step by step. **Relay that instruction verbatim**; do not invent your own.
 - **`!` (warning)** — it still works. The common case: the folder given is Drive
-  mounted on disk. Mention what the user would gain by pasting the Drive URL (free
-  OCR, shareable links, stable ids) without forcing them to change.
+  mounted on disk. Mention what the user would gain by pasting the Drive URL
+  (shareable https links, a stable id per file) without forcing them to change.
 - **Plan** — how many images will be described and what it costs. If it reports
   "Nothing changed", the run is over: report that and stop.
 
@@ -63,6 +76,7 @@ To run unattended: `--yes` — but only after you have read the plan.
 
 | flag | when to reach for it |
 |---|---|
+| `--no-push` | the index must not leave the machine. By default a Drive collection gets its `_lupa/` folder written back into the Drive folder, where everyone who can see the collection can read every caption. Offer this flag whenever the material is confidential — nobody else will |
 | `--retry-failed` | the last run reported failures and the user wants them described |
 | `--resume-batch` | a previous run died waiting on its batch; lupa refuses to start until that batch is collected or given up |
 | `--no-recursive` | the user explicitly wants only the top folder |
@@ -73,14 +87,15 @@ To run unattended: `--yes` — but only after you have read the plan.
 ## After the run
 
 The command saves the collection under a short name (taken from the folder name),
-publishes the index to Drive when the source is Drive, and prints a summary. Report
+publishes the index to Drive when the source is Drive (unless `--no-push`), and
+prints a summary. Report
 what changed (`+N added · ~N changed · -N removed`) and the cost. Failures, if any,
 land in `runs/<date>.errors.jsonl`.
 
 ## Rebuilding from scratch (rare, and expensive)
 
 ```bash
-python3 -m lupa index <name> --rebuild --confirm "<name>"
+python -m lupa index <name> --rebuild --confirm "<name>"
 ```
 
 It requires typing the name. The previous index is copied to `.backup/` before any

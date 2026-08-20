@@ -7,12 +7,13 @@ import unicodedata
 
 DEFAULT_LIMIT = 15
 
-# Where a term matched matters: a tag is curation, OCR text is incidental.
+# Where a term matched matters: a tag is curation, the text baked into the image is
+# incidental. `text` is the model's transcription — it used to be a Drive field that
+# never existed, so it was empty in every index written before that was fixed.
 #
-# Google's raw `labels` are deliberately NOT searchable. They are generic and
-# frequently wrong — on a post about prioritization Drive suggested "Heineken" and
-# "Beryllium". Scoring them guarantees false positives, so they stay in the catalog
-# as reference and out of the query path.
+# `labels` is not scored, and is no longer written: it came out of the same phantom
+# field. Indexes written earlier still carry the key, empty; reading it costs nothing
+# and scoring it would only invite false positives.
 WEIGHTS = {"tags": 5, "caption": 3, "file": 2, "text": 1}
 
 

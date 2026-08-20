@@ -336,7 +336,6 @@ class TestTheExitCodeTellsTheTruth(unittest.TestCase):
         def list(self):
             return [{"id": name, "file": f"{name}.png", "hash": name,
                      "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
-                     "ocr_text": "", "labels": [],
                      "url": f"https://example.invalid/{name}",
                      "trashed": False, "size": 100}
                     for name in ("a", "b")]
@@ -448,3 +447,56 @@ class TestTheExitCodeTellsTheTruth(unittest.TestCase):
         code, printed = self.run_index(self.broken_model(), "--dry-run")
         self.assertEqual(0, code)
         self.assertIn("--dry-run", printed)
+
+
+class TestSearchAcceptsTheTextFilter(unittest.TestCase):
+    """`has_text` is a filter everywhere except the CLI, and that gap is silent.
+
+    The MCP has accepted it since the first version and the skill's filter table
+    lists it, so an agent that falls back to the command line runs
+    `--has-text false` and gets `unrecognized arguments`. The value also has to
+    arrive as a real boolean: the catalog stores `true`/`false` as JSON booleans
+    and the filter is an equality test, so the string "false" would match no
+    image at all — a wrong answer instead of an error.
+    """
+
+    def search(self, argv):
+        """Runs `lupa search` with the Server replaced by a spy. Nothing is read
+        from disk and no index is touched: only the filter dict is captured."""
+        from lupa import cli
+
+        captured = {}
+
+        class Spy:
+            def __init__(self, _root):
+                pass
+
+            def tool_search(self, args):
+                captured.update(args)
+                return ""
+
+        original = cli.Server
+        cli.Server = Spy
+        try:
+            cli.main(argv)
+        finally:
+            cli.Server = original
+        return captured
+
+    def test_false_reaches_the_filter_as_a_boolean(self):
+        filters = self.search(["search", "banner", "--has-text", "false"])
+        self.assertIn("has_text", filters)
+        self.assertIs(filters["has_text"], False)
+
+    def test_true_reaches_the_filter_as_a_boolean(self):
+        self.assertIs(self.search(
+            ["search", "banner", "--has-text", "true"])["has_text"], True)
+
+    def test_the_underscore_spelling_is_accepted_too(self):
+        """`has_text` is how the field is spelled in the catalog, in the schema
+        and in the MCP; whoever copies it must not hit a parser error."""
+        self.assertIs(self.search(
+            ["search", "banner", "--has_text", "true"])["has_text"], True)
+
+    def test_nothing_is_filtered_when_the_flag_is_absent(self):
+        self.assertNotIn("has_text", self.search(["search", "banner"]))
