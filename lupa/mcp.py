@@ -7,6 +7,7 @@ were already written — it never indexes, never touches the network, never spen
 import json
 from pathlib import Path
 
+from lupa import fts
 from lupa.search import search
 
 PROTOCOL = "2024-11-05"
@@ -75,6 +76,10 @@ class Server:
                     continue
         return items
 
+    def _count(self, collection):
+        """Image count without parsing the whole catalog."""
+        return self._manifest(collection).get("total", 0)
+
     def _manifest(self, collection):
         path = self.root / collection / "MANIFEST.json"
         try:
@@ -93,17 +98,29 @@ class Server:
                     f"Available: {', '.join(available) or 'none'}")
 
         targets = [collection] if collection else available
-        catalog = [item for name in targets for item in self._load(name)]
         filters = {key: args[key] for key in ACCEPTED_FILTERS if args.get(key) is not None}
+        text = args.get("query", "")
+        limit = int(args.get("limit") or 15)
 
-        results = search(catalog, args.get("query", ""), filters=filters,
-                         limit=int(args.get("limit") or 15))
+        # Fast path: the FTS5 projection, with BM25 ranking. It is derived data, so
+        # a missing or stale database simply falls back to scanning the catalog.
+        results, catalog_size = [], 0
+        for name in targets:
+            database = self.root / name / "index.db"
+            if database.exists():
+                results += fts.query(database, text, filters=filters, limit=limit)
+                catalog_size += self._count(name)
+            else:
+                catalog = self._load(name)
+                catalog_size += len(catalog)
+                results += search(catalog, text, filters=filters, limit=limit)
+        results = results[:limit]
         if not results:
             return ("No results. Try broader terms, or call `lupa_status` to see "
                     "the vocabulary of each collection.")
 
         noun = "candidate" if len(results) == 1 else "candidates"
-        lines = [f"{len(results)} {noun} (out of {len(catalog)} images):", ""]
+        lines = [f"{len(results)} {noun} (out of {catalog_size} images):", ""]
         for result in results:
             kind = f"{result.get('kind')}/{result.get('medium')}"
             lines.append(

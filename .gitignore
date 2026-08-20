@@ -13,3 +13,8 @@ client_secret*.json
 # trabalho local
 .lupa-cache/
 *.tmp
+
+# derived, rebuildable from catalog.jsonl
+*.db
+*.db.tmp
+.thumbs/

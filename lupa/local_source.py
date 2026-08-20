@@ -57,6 +57,10 @@ class LocalSource:
         return found
 
     def fetch(self, item_id):
+        """Bytes ready for the model — downscaled, so a 24MP photo does not cost 4x."""
+        from lupa.thumbnail import downscale
+
         entry = self.root / item_id
         data = entry.read_bytes()
-        return data, mime_of(data, entry.name)
+        mime = mime_of(data, entry.name)
+        return downscale(data, mime), mime

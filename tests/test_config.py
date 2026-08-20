@@ -128,3 +128,26 @@ class TestPathRedirection(unittest.TestCase):
     def test_without_either_it_uses_the_portable_default(self):
         from lupa.config import config_path
         self.assertTrue(str(config_path({})).endswith(".lupa/collections.json"))
+
+
+class TestPathConsistency(unittest.TestCase):
+    """Every caller must land on the same file, with or without an explicit env."""
+
+    def test_config_path_is_the_same_with_and_without_an_explicit_env(self):
+        from lupa.config import config_path, read_env
+        self.assertEqual(config_path(), config_path(read_env()))
+
+    def test_a_caller_that_passes_nothing_still_honors_the_env_file(self):
+        import os
+        import tempfile
+        from lupa.config import config_path
+
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as handle:
+            handle.write("LUPA_CONFIG=/from/the/file.json\n")
+            env_file = handle.name
+        os.environ["LUPA_ENV"] = env_file
+        try:
+            self.assertEqual(str(config_path()), "/from/the/file.json")
+        finally:
+            del os.environ["LUPA_ENV"]
+            Path(env_file).unlink(missing_ok=True)

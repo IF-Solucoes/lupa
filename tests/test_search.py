@@ -89,3 +89,23 @@ class TestLimit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLabelsAreNotSearchable(unittest.TestCase):
+    """Google's raw labels are noisy; scoring them guarantees false positives."""
+
+    CATALOG = [{"id": "1", "file": "priority.png", "kind": "design", "medium": "digital",
+                "orientation": "portrait", "has_text": True,
+                "caption": "Dark post about automation priorities",
+                "tags": ["priority", "automation"], "text": "PRIORITY",
+                "labels": ["Heineken", "Beryllium", "Poly(methyl methacrylate)"]}]
+
+    def test_a_bogus_google_label_does_not_match(self):
+        self.assertEqual(search(self.CATALOG, "heineken"), [])
+
+    def test_the_real_content_still_matches(self):
+        self.assertEqual([r["id"] for r in search(self.CATALOG, "automation")], ["1"])
+
+    def test_labels_remain_in_the_catalog_for_reference(self):
+        result = search(self.CATALOG, "automation")[0]
+        self.assertIn("Heineken", result["labels"])

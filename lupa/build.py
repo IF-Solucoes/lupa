@@ -6,12 +6,33 @@ Three reading levels, cheapest first:
   catalog.jsonl → only when fields must be crossed
 """
 import json
+import os
 import shutil
 import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+
+
+def atomic_write(path, text, encoding="utf-8"):
+    """Writes through a temporary file and renames it into place.
+
+    A crash mid-write would otherwise leave a truncated catalog — and a truncated
+    catalog costs a full reindex to repair.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with open(temporary, "w", encoding=encoding) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def tag_filename(tag):
@@ -41,7 +62,7 @@ def backup(index_dir, now):
 
 def _write_catalog(index_dir, items):
     lines = [json.dumps(dict(item, v=SCHEMA_VERSION), ensure_ascii=False) for item in items]
-    (index_dir / "catalog.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write(index_dir / "catalog.jsonl", "\n".join(lines) + "\n")
 
 
 def _write_by_tag(index_dir, items):
@@ -66,7 +87,7 @@ def _write_by_tag(index_dir, items):
             lines.append(
                 f"| {member.get('file')} | {kind} | {member.get('orientation')} | "
                 f"{member.get('caption', '')} | {member.get('url', '')} |")
-        (folder / f"{tag}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        atomic_write(folder / f"{tag}.md", "\n".join(lines) + "\n")
 
 
 def _write_index_md(index_dir, collection, items, now, model):
@@ -118,7 +139,7 @@ def _write_index_md(index_dir, collection, items, now, model):
 | `MANIFEST.json` | internal state: the hashes that make updates incremental |
 | `runs/` | what each run changed |
 """
-    (index_dir / "INDEX.md").write_text(text, encoding="utf-8")
+    atomic_write(index_dir / "INDEX.md", text)
 
 
 def _write_manifest(index_dir, collection, items, model, now):
@@ -140,7 +161,7 @@ def _write_manifest(index_dir, collection, items, model, now):
         "items": {item["id"]: {"hash": item.get("hash"), "file": item.get("file")}
                   for item in items},
     }
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(path, json.dumps(manifest, ensure_ascii=False, indent=2))
     return manifest
 
 
@@ -156,7 +177,19 @@ Images in collection: {len(items)}
 
 Estimated cost: US$ {cost_usd} · model: {model}
 """
-    (folder / f"{name}.md").write_text(text, encoding="utf-8")
+    atomic_write(folder / f"{name}.md", text)
+
+
+def _write_search_projection(index_dir, items):
+    """Rebuilds the SQLite/FTS5 projection. Derived data — never the source of truth."""
+    from lupa import fts
+
+    if not fts.available():
+        return
+    try:
+        fts.build(items, index_dir / "index.db")
+    except Exception:
+        return  # the flat catalog still answers; the projection is an accelerator
 
 
 def write_index(index_dir, collection, items, summary, model, cost_usd, now):
@@ -166,6 +199,7 @@ def write_index(index_dir, collection, items, summary, model, cost_usd, now):
     items = sorted(items, key=lambda item: item.get("file", ""))
 
     _write_catalog(index_dir, items)
+    _write_search_projection(index_dir, items)
     _write_by_tag(index_dir, items)
     _write_index_md(index_dir, collection, items, now, model)
     _write_run_report(index_dir, collection, items, summary, cost_usd, model, now)

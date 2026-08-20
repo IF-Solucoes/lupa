@@ -59,6 +59,16 @@ Before any spending, the command prints a diagnosis and a plan:
 To see only the plan: `--dry-run`.
 To run unattended: `--yes` — but only after you have read the plan.
 
+## Flags worth knowing
+
+| flag | when to reach for it |
+|---|---|
+| `--retry-failed` | the last run reported failures and the user wants them described |
+| `--no-recursive` | the user explicitly wants only the top folder |
+| `--no-batch` | the user needs the index now and accepts paying twice as much |
+| `--workers N` | tuning parallelism when batch is off (default 8) |
+| `--no-contact-sheets` | Pillow is missing, or the grids are not wanted |
+
 ## After the run
 
 The command saves the collection under a short name (taken from the folder name),

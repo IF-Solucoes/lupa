@@ -24,11 +24,13 @@ def env_path():
 def config_path(file_env=None):
     """Where the collection registry lives.
 
-    Order: process environment > the env file > portable default. The env file has
-    to be able to redirect this, so that one settings file can move every path.
+    Order: process environment > the env file > portable default. When no env is
+    handed in, the file is read here — otherwise a caller that passes nothing and a
+    caller that passes the env would resolve to different files, and one of them
+    would silently write to the wrong place.
     """
     chosen = (os.environ.get("LUPA_CONFIG")
-              or (file_env or {}).get("LUPA_CONFIG")
+              or (file_env if file_env is not None else read_env()).get("LUPA_CONFIG")
               or DEFAULT_CONFIG)
     return Path(chosen).expanduser()
 

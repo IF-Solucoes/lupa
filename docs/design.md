@@ -217,6 +217,49 @@ The repository is public and cannot assume its author's environment:
 - Every path is configurable by environment variable, with a portable default under
   `~/.lupa`.
 
+## 8.1 Search: a disposable SQLite projection
+
+`catalog.jsonl` stays the source of truth — it is what the no-code face reads and
+what travels with the collection. Alongside it, each run rebuilds an `index.db`
+(SQLite + FTS5), which is derived, gitignored, never published, and thrown away
+whenever convenient.
+
+It exists for three things a flat scan does badly:
+
+- **BM25 ranking.** Flat per-field weights treat a term in 3 images and a term in
+  3,000 as equals, which buries the match that actually identifies the image.
+- **Conjunction and prefixes.** "printed banner blue" means all three; `bann`
+  should find `banner`. Both come free with FTS5.
+- **Scale.** Measured over 50,000 items: 1,019 ms scanning the catalog versus
+  43 ms through the projection — 23× — and the MCP no longer parses a 21 MB file
+  on every call.
+
+Rebuilding costs about a second per 50,000 items and the module degrades cleanly:
+where sqlite3 lacks FTS5, or the database is missing, search falls back to the
+flat scan.
+
+## 8.2 Cost control
+
+Two decisions keep the estimate honest rather than optimistic:
+
+- **Thumbnails, not originals.** A 24-megapixel photograph costs several times a
+  768px thumbnail and buys nothing for describing composition. Drive collections
+  reuse the thumbnail Google already generated (free, no dependency); local
+  collections downscale with Pillow when it is installed.
+- **Batch by default.** The whole run goes up as one Gemini batch job at half
+  price. `--no-batch` trades the discount for immediate answers, and parallelizes
+  across a thread pool instead.
+
+## 8.3 Durability
+
+Every index file is written through a temporary file and renamed into place. A
+crash mid-write would otherwise leave a truncated catalog, and a truncated catalog
+costs a full reindex to repair.
+
+Images that fail are recorded per run in `runs/<date>.errors.jsonl`.
+`--retry-failed` drops those ids from the manifest, which is what turns them back
+into new work on the next reconciliation.
+
 ## 9. Success criteria
 
 `scripts/postcheck.py` validates the index; the test suite covers the rest.

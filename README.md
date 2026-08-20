@@ -32,7 +32,9 @@ question is answered over text.
 2. **Decide whatever metadata can decide.** EXIF, aspect ratio, format, and text
    density already tell a camera photo from a design export. Zero cost.
 3. **Only then call the vision model**, and only for what is left: composition,
-   light, palette, style, ambiguous types. Gemini 2.5 Flash-Lite, in batch.
+   light, palette, style, ambiguous types. Gemini 2.5 Flash-Lite, submitted as a
+   single batch job at half price. The model never receives a 24-megapixel
+   original either — it gets the 768px thumbnail Google already generated.
 4. **Write a text index** inside the collection itself (`_lupa/`), at three reading
    levels, cheapest first.
 
@@ -96,6 +98,10 @@ To **index** (not to search) you also need:
 - a [Gemini API key](https://aistudio.google.com/apikey)
 - an OAuth desktop-app client from Google Cloud, with the Drive API enabled
 
+`pip install Pillow` is optional. Without it, contact sheets are skipped and local
+images are sent at full size — which works, but costs more per image. Drive
+collections do not need it: the thumbnails come from Google.
+
 Scopes used: `drive.readonly` to read the collection and `drive.file` to write
 **only** the files lupa itself creates. It never modifies a file of yours.
 
@@ -142,7 +148,30 @@ proceeding. `--dry-run` stops right after the plan; `--yes` skips the question.
 ```bash
 python3 -m lupa search "bread oven warm light" --kind photo
 python3 -m lupa status
+python3 -m lupa forget old-collection --delete-index
 ```
+
+Search runs over a SQLite FTS5 projection of the catalog, so ranking is **BM25**:
+a term appearing in three images outweighs one appearing in three thousand. All
+query terms are required; if nothing matches them all, it falls back to any of
+them and says so in the reason. Prefixes work (`bann` finds `banner`), and the
+projection is derived data — delete it and the next run rebuilds it.
+
+Google's raw `labels` are stored but deliberately **not searchable**. They are
+generic and often wrong — on a post about prioritization Drive suggested
+"Heineken" and "Beryllium". Scoring them would guarantee false positives.
+
+### Useful flags
+
+| flag | what it does |
+|---|---|
+| `--dry-run` | stop after the plan, spend nothing |
+| `--retry-failed` | describe again the images that failed in earlier runs |
+| `--no-recursive` | index only the top level |
+| `--no-batch` | one call per image, immediate but twice the price |
+| `--workers N` | parallel describe calls when batch is off (default 8) |
+| `--no-contact-sheets` | skip the visual curation grids |
+| `--rebuild --confirm "<name>"` | rebuild from scratch, after backing up |
 
 ## The index
 
@@ -151,7 +180,7 @@ python3 -m lupa status
 ├── INDEX.md          # entry point (~2 KB): counts, vocabulary, how to query
 ├── catalog.jsonl     # one JSON line per image — for field-level filtering
 ├── by-tag/<tag>.md   # inverted index, readable without running code
-├── contact-sheets/   # visual grids, for human curation
+├── contact-sheets/   # one grid per frequent tag, for human curation
 ├── MANIFEST.json     # hashes — what makes updates incremental
 └── runs/<date>.md    # what each run changed
 ```
@@ -216,6 +245,10 @@ Describing a thousand images in batch with Flash-Lite lands in the range of
 `--dry-run` before you spend.
 
 Above 200 new images, the command asks first.
+
+Two things keep that number honest: the model receives a 768px thumbnail rather
+than the original, and the whole run goes up as one batch job at half price. Pass
+`--no-batch` to trade the discount for immediate answers.
 
 ## What it does not do
 

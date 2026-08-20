@@ -8,7 +8,12 @@ import unicodedata
 DEFAULT_LIMIT = 15
 
 # Where a term matched matters: a tag is curation, OCR text is incidental.
-WEIGHTS = {"tags": 5, "caption": 3, "file": 2, "labels": 1, "text": 1}
+#
+# Google's raw `labels` are deliberately NOT searchable. They are generic and
+# frequently wrong — on a post about prioritization Drive suggested "Heineken" and
+# "Beryllium". Scoring them guarantees false positives, so they stay in the catalog
+# as reference and out of the query path.
+WEIGHTS = {"tags": 5, "caption": 3, "file": 2, "text": 1}
 
 
 def _normalize(text):
@@ -22,7 +27,6 @@ def _fields(item):
         "tags": " ".join(item.get("tags") or []),
         "caption": item.get("caption") or "",
         "file": item.get("file") or "",
-        "labels": " ".join(item.get("labels") or []),
         "text": item.get("text") or "",
     }
 

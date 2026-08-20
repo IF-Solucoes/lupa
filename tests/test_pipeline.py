@@ -151,3 +151,75 @@ class TestIsolatedFailure(PipelineTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestContactSheets(PipelineTestCase):
+    def test_the_run_reports_on_contact_sheets(self):
+        result = self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        self.assertIn("contact_sheets", result)
+
+    def test_sheets_can_be_switched_off(self):
+        result = self.execute(FakeSource([a_file("a", "1")]), mode="index",
+                              contact_sheets=False)
+        self.assertEqual(result["contact_sheets"]["sheets"], 0)
+
+    def test_a_missing_pillow_does_not_fail_the_run(self):
+        # fake bytes are not a real image; thumbnailing must stay silent
+        result = self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        self.assertTrue(result["written"])
+
+
+class SlowSource(FakeSource):
+    """Simulates network latency, so parallelism is measurable rather than assumed."""
+
+    def fetch(self, file_id):
+        import time
+        time.sleep(0.02)
+        return super().fetch(file_id)
+
+
+class TestParallelism(PipelineTestCase):
+    def test_workers_do_not_change_the_result(self):
+        source = FakeSource([a_file(str(i), "h") for i in range(6)])
+        self.execute(source, mode="index", workers=4)
+        self.assertEqual(len(self.catalog()), 6)
+
+    def test_the_catalog_order_is_stable_regardless_of_workers(self):
+        files = [a_file(str(i), "h") for i in range(6)]
+        self.execute(FakeSource(files), mode="index", workers=4)
+        parallel_order = [item["id"] for item in self.catalog()]
+
+        import shutil
+        shutil.rmtree(self.dir)
+        self.model.calls.clear()
+        self.execute(FakeSource(files), mode="index", workers=1)
+        self.assertEqual([item["id"] for item in self.catalog()], parallel_order)
+
+    def test_parallel_is_faster_when_fetching_is_slow(self):
+        import time
+        files = [a_file(str(i), "h") for i in range(8)]
+
+        start = time.perf_counter()
+        self.execute(SlowSource(files), mode="index", workers=1)
+        serial = time.perf_counter() - start
+
+        import shutil
+        shutil.rmtree(self.dir)
+        start = time.perf_counter()
+        self.execute(SlowSource(files), mode="index", workers=8)
+        parallel = time.perf_counter() - start
+
+        self.assertLess(parallel, serial)
+
+    def test_a_failure_in_one_worker_does_not_lose_the_others(self):
+        def flaky(item, image, mime):
+            if item["id"] == "3":
+                raise RuntimeError("bad image")
+            return {"caption": "ok", "tags": ["t"]}
+
+        from lupa.pipeline import run
+        source = FakeSource([a_file(str(i), "h") for i in range(6)])
+        result = run(collection="x", index_dir=self.dir, source=source,
+                     describe=flaky, mode="index", now="2026-08-20T10-00-00", workers=4)
+        self.assertEqual(len(result["failures"]), 1)
+        self.assertEqual(len(self.catalog()), 5)

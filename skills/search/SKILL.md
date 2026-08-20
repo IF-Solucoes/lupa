@@ -53,6 +53,16 @@ Requests these actually solve:
 - *"how we have applied the brand in print"* → `kind=design`, `medium=physical`
 - *"story references"* → `orientation=portrait`, `kind=design`
 
+## How ranking works
+
+Search runs over a BM25 index, so a rare term outweighs a common one — "cable-stayed"
+counts for far more than "blue". All your terms are required; when nothing matches
+them all, the search falls back to any of them and the reason says `some terms`
+instead of `all terms`. Prefixes work: `bann` finds `banner`.
+
+Google's raw labels are stored in the catalog but are **not** searchable, because
+they are noisy enough to produce false positives on their own.
+
 ## Reading the result
 
 Each candidate carries a caption, tags, type, link, and **why it matched**

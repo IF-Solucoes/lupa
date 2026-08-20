@@ -11,7 +11,8 @@ LABELS_MARKER = "Image labels:"
 
 # Fields requested from the API. Each one saves a later round trip.
 FIELDS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
-          "webViewLink,imageMediaMetadata(width,height,cameraMake,cameraModel)),nextPageToken")
+          "webViewLink,thumbnailLink,"
+          "imageMediaMetadata(width,height,cameraMake,cameraModel)),nextPageToken")
 
 
 INDEX_FOLDER = "_lupa"
@@ -81,6 +82,7 @@ def normalize_file(raw):
         "ocr_text": ocr,
         "labels": labels,
         "url": raw.get("webViewLink") or f"https://drive.google.com/file/d/{raw.get('id')}/view",
+        "thumbnail": raw.get("thumbnailLink"),
         "trashed": bool(raw.get("trashed")),
     }
 
@@ -93,8 +95,12 @@ SCOPES = [
 ]
 
 
-def connect(client_secret, token_path):
-    """Returns the Drive service, prompting for sign-in only the first time."""
+def connect(client_secret, token_path, with_credentials=False):
+    """Returns the Drive service, prompting for sign-in only the first time.
+
+    with_credentials=True also returns the credentials, which the thumbnail
+    endpoint needs (it is a plain HTTP GET, outside the API client).
+    """
     from pathlib import Path
 
     from google.auth.transport.requests import Request
@@ -117,7 +123,8 @@ def connect(client_secret, token_path):
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(credentials.to_json())
 
-    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+    service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    return (service, credentials) if with_credentials else service
 
 
 def _list_page(service, query, fields):
@@ -171,6 +178,30 @@ def list_images(service, folder_id, recursive=True):
             item["file"] = f"{prefix}{item['file']}"
             files.append(item)
     return files
+
+
+def fetch_thumbnail(credentials, link, size=None):
+    """Downloads the thumbnail Google already generated, at the size we ask for.
+
+    This is the cheap path: no full download, no Pillow, and the model receives a
+    768px image instead of a 24-megapixel original.
+    """
+    import urllib.request
+
+    from google.auth.transport.requests import Request
+
+    from lupa.thumbnail import MAX_EDGE_PX, thumbnail_url
+
+    url = thumbnail_url(link, size or MAX_EDGE_PX)
+    if not url:
+        return None
+
+    if not credentials.valid:
+        credentials.refresh(Request())
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {credentials.token}"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
 
 
 def download(service, file_id, destination):

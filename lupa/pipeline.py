@@ -9,8 +9,12 @@ from pathlib import Path
 from lupa.build import backup, write_index
 from lupa.caption import estimate_cost, merge
 from lupa.classify import classify
+from lupa.contact_sheet import build_sheets
 from lupa.guards import Lock, check_before_indexing
 from lupa.reconcile import reconcile
+
+THUMBS_DIR = ".thumbs"
+CURATION_PX = 240
 
 
 def _load_manifest(index_dir):
@@ -38,9 +42,72 @@ def _load_catalog(index_dir):
     return stored
 
 
+def _keep_thumbnail(index_dir, item_id, data):
+    """Stores a small copy for the contact sheets. Silent no-op without Pillow."""
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image = image.convert("RGB")
+            image.thumbnail((CURATION_PX, CURATION_PX))
+            # The directory is created only once an image actually decodes, so a
+            # collection of unreadable files leaves no empty folder behind.
+            folder = Path(index_dir) / THUMBS_DIR
+            folder.mkdir(parents=True, exist_ok=True)
+            safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(item_id))[:80]
+            image.save(folder / f"{safe}.jpg", quality=75)
+    except Exception:
+        return  # curation art is optional; the index is not
+
+
+def _describe_many(source, describe, index_dir, raw_by_id, ids, workers):
+    """Describes the pending images, in parallel when it pays off.
+
+    Returns (results_by_id, failures). Order is not preserved here on purpose —
+    the caller reassembles deterministically, so the catalog never depends on
+    thread scheduling.
+    """
+    results, failures = {}, []
+
+    def one(file_id):
+        raw = raw_by_id[file_id]
+        image, mime = source.fetch(file_id)
+        _keep_thumbnail(index_dir, file_id, image)
+        return file_id, describe(raw, image, mime)
+
+    if workers <= 1 or len(ids) <= 1:
+        for file_id in ids:
+            try:
+                _, response = one(file_id)
+                results[file_id] = response
+            except Exception as error:
+                failures.append({"id": file_id, "file": raw_by_id[file_id].get("file"),
+                                 "error": str(error)})
+        return results, failures
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(one, file_id): file_id for file_id in ids}
+        for future in as_completed(futures):
+            file_id = futures[future]
+            try:
+                _, response = future.result()
+                results[file_id] = response
+            except Exception as error:
+                failures.append({"id": file_id, "file": raw_by_id[file_id].get("file"),
+                                 "error": str(error)})
+    return results, failures
+
+
 def run(collection, index_dir, source, describe, mode="update", now="",
         dry_run=False, rebuild=False, confirm=None, batch=True,
-        model="gemini-2.5-flash-lite"):
+        model="gemini-2.5-flash-lite", contact_sheets=True, workers=1):
     """Executes one full run.
 
     source   — object exposing .list() and .fetch(file_id) -> (bytes, mime)
@@ -68,25 +135,24 @@ def run(collection, index_dir, source, describe, mode="update", now="",
     with Lock(index_dir):
         stored = _load_catalog(index_dir)
         by_id = {entry["id"]: entry for entry in remote}
-        pending = set(plan.to_describe)
-        items, failures = [], []
+        pending = plan.to_describe
 
+        described, failures = _describe_many(source, describe, index_dir,
+                                             by_id, pending, workers)
+
+        items = []
         for file_id in plan.added + plan.changed + plan.unchanged:
-            raw = by_id[file_id]
-
-            if file_id not in pending:      # unchanged: reuse what was already paid for
-                items.append(stored[file_id])
+            if file_id not in described:
+                if file_id in stored:       # unchanged: reuse what was already paid for
+                    items.append(stored[file_id])
                 continue
+            meta = {**by_id[file_id], **classify(by_id[file_id])}
+            items.append(merge(meta, described[file_id]))
 
-            meta = {**raw, **classify(raw)}
-            try:
-                image, mime = source.fetch(file_id)
-                response = describe(raw, image, mime)
-            except Exception as error:      # one bad image must not sink the run
-                failures.append({"id": file_id, "file": raw.get("file"),
-                                 "error": str(error)})
-                continue
-            items.append(merge(meta, response))
+        sheets = {"sheets": 0}
+        if contact_sheets:
+            sheets = build_sheets(items, thumbs_dir=index_dir / THUMBS_DIR,
+                                  out_dir=index_dir / "contact-sheets")
 
         new_manifest = write_index(
             index_dir, collection=collection, items=items, summary=plan.summary(),
@@ -99,4 +165,5 @@ def run(collection, index_dir, source, describe, mode="update", now="",
                 encoding="utf-8")
 
     return {"plan": plan, "estimated_cost": cost, "failures": failures,
-            "written": True, "manifest": new_manifest, "total": len(items)}
+            "written": True, "manifest": new_manifest, "total": len(items),
+            "contact_sheets": sheets}
