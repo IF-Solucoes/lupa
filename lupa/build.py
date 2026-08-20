@@ -1,9 +1,9 @@
-"""Escrita do índice. Estes arquivos são o contrato com quem consome.
+"""Writing the index. These files are the contract with whoever consumes it.
 
-Três níveis de leitura, do barato ao caro:
-  INDEX.md      → sempre (~2 KB)
-  by-tag/*.md   → só as tags relevantes
-  catalog.jsonl → só quando precisa cruzar campos
+Three reading levels, cheapest first:
+  INDEX.md      → always (~2 KB)
+  by-tag/*.md   → only the relevant tags
+  catalog.jsonl → only when fields must be crossed
 """
 import json
 import shutil
@@ -11,160 +11,162 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
-SCHEMA_VERSAO = 1
+SCHEMA_VERSION = 1
 
 
-def nome_de_arquivo_de_tag(tag):
-    """Tag vira nome de arquivo seguro em qualquer sistema de arquivos."""
-    sem_acento = unicodedata.normalize("NFKD", str(tag))
-    limpo = "".join(c for c in sem_acento if not unicodedata.combining(c)).lower()
-    return "-".join(limpo.replace("/", " ").replace("_", " ").split())
+def tag_filename(tag):
+    """Turns a tag into a filename that is safe on any filesystem."""
+    decomposed = unicodedata.normalize("NFKD", str(tag))
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+    return "-".join(stripped.replace("/", " ").replace("_", " ").split())
 
 
-def fazer_backup(index_dir, agora):
-    """Copia o índice atual para .backup/<agora>/ antes de uma escrita destrutiva."""
-    origem = Path(index_dir)
-    if not (origem / "MANIFEST.json").exists():
+def backup(index_dir, now):
+    """Copies the current index into .backup/<now>/ before a destructive write."""
+    source = Path(index_dir)
+    if not (source / "MANIFEST.json").exists():
         return None
-    destino = origem / ".backup" / str(agora)
-    destino.mkdir(parents=True, exist_ok=True)
-    for item in origem.iterdir():
-        if item.name == ".backup":
+    destination = source / ".backup" / str(now)
+    destination.mkdir(parents=True, exist_ok=True)
+    for entry in source.iterdir():
+        if entry.name == ".backup":
             continue
-        alvo = destino / item.name
-        if item.is_dir():
-            shutil.copytree(item, alvo, dirs_exist_ok=True)
+        target = destination / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, target, dirs_exist_ok=True)
         else:
-            shutil.copy2(item, alvo)
-    return destino
+            shutil.copy2(entry, target)
+    return destination
 
 
-def _escrever_catalogo(index_dir, itens):
-    linhas = [json.dumps(dict(i, v=SCHEMA_VERSAO), ensure_ascii=False) for i in itens]
-    (index_dir / "catalog.jsonl").write_text("\n".join(linhas) + "\n", encoding="utf-8")
+def _write_catalog(index_dir, items):
+    lines = [json.dumps(dict(item, v=SCHEMA_VERSION), ensure_ascii=False) for item in items]
+    (index_dir / "catalog.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _escrever_by_tag(index_dir, itens):
-    """Índice invertido em Markdown — permite busca sem executar código."""
-    pasta = index_dir / "by-tag"
-    pasta.mkdir(exist_ok=True)
+def _write_by_tag(index_dir, items):
+    """Inverted index in Markdown — search without running any code."""
+    folder = index_dir / "by-tag"
+    folder.mkdir(exist_ok=True)
 
-    por_tag = defaultdict(list)
-    for item in itens:
+    by_tag = defaultdict(list)
+    for item in items:
         for tag in item.get("tags") or []:
-            por_tag[nome_de_arquivo_de_tag(tag)].append(item)
+            by_tag[tag_filename(tag)].append(item)
 
-    for obsoleto in pasta.glob("*.md"):  # tag que sumiu não deixa arquivo órfão
-        if obsoleto.stem not in por_tag:
-            obsoleto.unlink()
+    for stale in folder.glob("*.md"):  # a tag that vanished leaves no orphan file
+        if stale.stem not in by_tag:
+            stale.unlink()
 
-    for tag, membros in por_tag.items():
-        linhas = [f"# {tag} — {len(membros)} imagens", ""]
-        linhas += ["| arquivo | tipo | orientação | descrição | link |",
-                   "|---|---|---|---|---|"]
-        for m in sorted(membros, key=lambda x: x.get("file", "")):
-            tipo = f"{m.get('kind') or '?'}/{m.get('medium') or '?'}"
-            linhas.append(
-                f"| {m.get('file')} | {tipo} | {m.get('orientation')} | "
-                f"{m.get('caption', '')} | {m.get('url', '')} |")
-        (pasta / f"{tag}.md").write_text("\n".join(linhas) + "\n", encoding="utf-8")
+    for tag, members in by_tag.items():
+        lines = [f"# {tag} — {len(members)} images", ""]
+        lines += ["| file | type | orientation | caption | link |", "|---|---|---|---|---|"]
+        for member in sorted(members, key=lambda x: x.get("file", "")):
+            kind = f"{member.get('kind') or '?'}/{member.get('medium') or '?'}"
+            lines.append(
+                f"| {member.get('file')} | {kind} | {member.get('orientation')} | "
+                f"{member.get('caption', '')} | {member.get('url', '')} |")
+        (folder / f"{tag}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _escrever_index_md(index_dir, acervo, itens, agora, modelo):
-    tags = Counter(t for i in itens for t in (i.get("tags") or []))
-    kinds = Counter(i.get("kind") or "indefinido" for i in itens)
-    mediums = Counter(i.get("medium") or "indefinido" for i in itens)
+def _write_index_md(index_dir, collection, items, now, model):
+    tags = Counter(tag for item in items for tag in (item.get("tags") or []))
+    kinds = Counter(item.get("kind") or "undetermined" for item in items)
+    mediums = Counter(item.get("medium") or "undetermined" for item in items)
 
-    vocabulario = " · ".join(f"`{t}` ({n})" for t, n in tags.most_common(40))
-    por_kind = " · ".join(f"{k}: {n}" for k, n in kinds.most_common())
-    por_medium = " · ".join(f"{m}: {n}" for m, n in mediums.most_common())
+    vocabulary = " · ".join(f"`{tag}` ({n})" for tag, n in tags.most_common(40))
+    by_kind = " · ".join(f"{kind}: {n}" for kind, n in kinds.most_common())
+    by_medium = " · ".join(f"{medium}: {n}" for medium, n in mediums.most_common())
 
-    texto = f"""# Índice visual — {acervo}
+    text = f"""# Visual index — {collection}
 
-**{len(itens)} imagens** · atualizado em {agora} · descrito por `{modelo}` · schema v{SCHEMA_VERSAO}
+**{len(items)} images** · updated {now} · described by `{model}` · schema v{SCHEMA_VERSION}
 
-> **Leia texto, nunca pixels.** Este índice existe para que você NÃO precise abrir
-> as imagens. Abrir imagem custa caro e é o que este arquivo evita. Se precisar
-> confirmar visualmente, abra apenas os finalistas que a busca devolveu.
+> **Read text, never pixels.** This index exists so that you do NOT have to open
+> the images. Opening an image is expensive, and avoiding it is the whole point of
+> this file. If you need visual confirmation, open only the finalists that the
+> search returned.
 
-## O que tem aqui
+## What is here
 
-- **Por tipo:** {por_kind}
-- **Por material:** {por_medium}
+- **By type:** {by_kind}
+- **By material:** {by_medium}
 
-`kind`: foto · peca · captura · grafico · logo · outro
-`medium`: fisico · digital · na — um mockup impresso é `peca` + `fisico`.
+`kind`: photo · design · screenshot · diagram · logo · other
+`medium`: physical · digital · na — a printed mockup is `design` + `physical`.
 
-## Vocabulário
+## Vocabulary
 
-{vocabulario}
+{vocabulary}
 
-## Como consultar
+## How to query
 
-1. **Achou a tag acima?** Leia `by-tag/<tag>.md`. É uma tabela pronta, com link. Pare aqui.
-2. **Precisa cruzar campos** (tipo + orientação + sem texto)? Filtre `catalog.jsonl`.
-   Uma linha por imagem, JSON, campos em `schema/index-v1.json`.
-3. **Tem o MCP do lupa?** Chame `lupa_search` e receba os finalistas já ranqueados.
+1. **Found a tag above?** Read `by-tag/<tag>.md`. It is a ready-made table with
+   links. Stop there.
+2. **Need to cross fields** (type + orientation + no text)? Filter `catalog.jsonl`.
+   One line per image; fields are defined in `schema/index-v1.json`.
+3. **Have the lupa MCP?** Call `lupa_search` and get ranked finalists directly.
 
-## Arquivos
+## Files
 
-| arquivo | para quê |
+| file | purpose |
 |---|---|
-| `INDEX.md` | este mapa — leia sempre primeiro |
-| `by-tag/*.md` | índice invertido, leitura barata sem código |
-| `catalog.jsonl` | uma linha por imagem, para filtrar por campo |
-| `contact-sheets/` | grades visuais, para curadoria humana |
-| `MANIFEST.json` | estado interno: hashes que tornam a atualização incremental |
-| `runs/` | o que cada rodada mudou |
+| `INDEX.md` | this map — always read it first |
+| `by-tag/*.md` | inverted index, cheap to read without code |
+| `catalog.jsonl` | one line per image, for field-level filtering |
+| `contact-sheets/` | visual grids, for human curation |
+| `MANIFEST.json` | internal state: the hashes that make updates incremental |
+| `runs/` | what each run changed |
 """
-    (index_dir / "INDEX.md").write_text(texto, encoding="utf-8")
+    (index_dir / "INDEX.md").write_text(text, encoding="utf-8")
 
 
-def _escrever_manifesto(index_dir, acervo, itens, modelo, agora):
-    caminho = index_dir / "MANIFEST.json"
-    rodadas = 0
-    if caminho.exists():
+def _write_manifest(index_dir, collection, items, model, now):
+    path = index_dir / "MANIFEST.json"
+    runs = 0
+    if path.exists():
         try:
-            rodadas = json.loads(caminho.read_text()).get("rodadas", 0)
+            runs = json.loads(path.read_text()).get("runs", 0)
         except (json.JSONDecodeError, OSError):
-            rodadas = 0
+            runs = 0
 
-    manifesto = {
-        "acervo": acervo,
-        "schema": SCHEMA_VERSAO,
-        "total": len(itens),
-        "rodadas": rodadas + 1,
-        "atualizado_em": agora,
-        "modelo": modelo,
-        "itens": {i["id"]: {"hash": i.get("hash"), "file": i.get("file")} for i in itens},
+    manifest = {
+        "collection": collection,
+        "schema": SCHEMA_VERSION,
+        "total": len(items),
+        "runs": runs + 1,
+        "updated_at": now,
+        "model": model,
+        "items": {item["id"]: {"hash": item.get("hash"), "file": item.get("file")}
+                  for item in items},
     }
-    caminho.write_text(json.dumps(manifesto, ensure_ascii=False, indent=2), encoding="utf-8")
-    return manifesto
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
 
 
-def _escrever_relatorio(index_dir, acervo, itens, resumo, custo_usd, modelo, agora):
-    pasta = index_dir / "runs"
-    pasta.mkdir(exist_ok=True)
-    nome = str(agora).replace(":", "-")
-    texto = f"""# Rodada {agora} · acervo "{acervo}"
+def _write_run_report(index_dir, collection, items, summary, cost_usd, model, now):
+    folder = index_dir / "runs"
+    folder.mkdir(exist_ok=True)
+    name = str(now).replace(":", "-")
+    text = f"""# Run {now} · collection "{collection}"
 
-Total no acervo: {len(itens)} imagens
+Images in collection: {len(items)}
 
-{resumo}
+{summary}
 
-Custo estimado: US$ {custo_usd} · modelo: {modelo}
+Estimated cost: US$ {cost_usd} · model: {model}
 """
-    (pasta / f"{nome}.md").write_text(texto, encoding="utf-8")
+    (folder / f"{name}.md").write_text(text, encoding="utf-8")
 
 
-def escrever_indice(index_dir, acervo, itens, resumo, modelo, custo_usd, agora):
-    """Escreve todos os artefatos do índice. Idempotente: reescreve o conjunto."""
+def write_index(index_dir, collection, items, summary, model, cost_usd, now):
+    """Writes every index artifact. Idempotent: it rewrites the whole set."""
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
-    itens = sorted(itens, key=lambda i: i.get("file", ""))
+    items = sorted(items, key=lambda item: item.get("file", ""))
 
-    _escrever_catalogo(index_dir, itens)
-    _escrever_by_tag(index_dir, itens)
-    _escrever_index_md(index_dir, acervo, itens, agora, modelo)
-    _escrever_relatorio(index_dir, acervo, itens, resumo, custo_usd, modelo, agora)
-    return _escrever_manifesto(index_dir, acervo, itens, modelo, agora)
+    _write_catalog(index_dir, items)
+    _write_by_tag(index_dir, items)
+    _write_index_md(index_dir, collection, items, now, model)
+    _write_run_report(index_dir, collection, items, summary, cost_usd, model, now)
+    return _write_manifest(index_dir, collection, items, model, now)

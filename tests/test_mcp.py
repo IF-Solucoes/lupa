@@ -1,90 +1,93 @@
-"""Servidor MCP: despacho JSON-RPC sobre o índice já escrito."""
+"""MCP server: JSON-RPC dispatch over an index already written."""
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from lupa.mcp import Servidor
+from lupa.mcp import Server
 
-ITEM = {"id": "1", "file": "ponte.png", "url": "https://drive/1", "kind": "peca",
-        "medium": "digital", "orientation": "retrato", "has_text": True,
-        "caption": "Ponte à noite", "tags": ["ponte", "noturno"], "text": "", "labels": []}
+ITEM = {"id": "1", "file": "bridge.png", "url": "https://example.invalid/1",
+        "kind": "design", "medium": "digital", "orientation": "portrait",
+        "has_text": True, "caption": "Bridge at night", "tags": ["bridge", "night"],
+        "text": "", "labels": []}
 
 
-class BaseMcp(unittest.TestCase):
+class McpTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.raiz = Path(self.tmp.name)
-        acervo = self.raiz / "if-editorial"
-        acervo.mkdir()
-        (acervo / "catalog.jsonl").write_text(json.dumps(ITEM, ensure_ascii=False) + "\n")
-        (acervo / "MANIFEST.json").write_text(json.dumps({"acervo": "if-editorial", "total": 1}))
-        self.servidor = Servidor(self.raiz)
+        self.root = Path(self.tmp.name)
+        collection = self.root / "if-editorial"
+        collection.mkdir()
+        (collection / "catalog.jsonl").write_text(json.dumps(ITEM, ensure_ascii=False) + "\n")
+        (collection / "MANIFEST.json").write_text(
+            json.dumps({"collection": "if-editorial", "total": 1}))
+        self.server = Server(self.root)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def chamar(self, metodo, params=None, id_=1):
-        return self.servidor.despachar({"jsonrpc": "2.0", "id": id_,
-                                        "method": metodo, "params": params or {}})
+    def call(self, method, params=None, request_id=1):
+        return self.server.dispatch({"jsonrpc": "2.0", "id": request_id,
+                                     "method": method, "params": params or {}})
 
 
-class TestHandshake(BaseMcp):
-    def test_initialize_anuncia_o_servidor(self):
-        r = self.chamar("initialize")
-        self.assertIn("protocolVersion", r["result"])
-        self.assertEqual(r["result"]["serverInfo"]["name"], "lupa")
+class TestHandshake(McpTestCase):
+    def test_initialize_announces_the_server(self):
+        result = self.call("initialize")["result"]
+        self.assertIn("protocolVersion", result)
+        self.assertEqual(result["serverInfo"]["name"], "lupa")
 
-    def test_metodo_desconhecido_devolve_erro_padrao(self):
-        self.assertEqual(self.chamar("tools/inexistente")["error"]["code"], -32601)
+    def test_an_unknown_method_returns_the_standard_error(self):
+        self.assertEqual(self.call("tools/nonexistent")["error"]["code"], -32601)
 
-    def test_notificacao_sem_id_nao_gera_resposta(self):
-        self.assertIsNone(self.servidor.despachar(
+    def test_a_notification_without_an_id_produces_no_response(self):
+        self.assertIsNone(self.server.dispatch(
             {"jsonrpc": "2.0", "method": "notifications/initialized"}))
 
 
-class TestFerramentas(BaseMcp):
-    def test_lista_as_duas_ferramentas(self):
-        nomes = [t["name"] for t in self.chamar("tools/list")["result"]["tools"]]
-        self.assertEqual(sorted(nomes), ["lupa_search", "lupa_status"])
+class TestTools(McpTestCase):
+    def test_it_lists_both_tools(self):
+        names = [tool["name"] for tool in self.call("tools/list")["result"]["tools"]]
+        self.assertEqual(sorted(names), ["lupa_search", "lupa_status"])
 
-    def test_toda_ferramenta_tem_schema_de_entrada(self):
-        for t in self.chamar("tools/list")["result"]["tools"]:
-            self.assertIn("inputSchema", t)
-
-
-class TestBusca(BaseMcp):
-    def _buscar(self, **args):
-        r = self.chamar("tools/call", {"name": "lupa_search", "arguments": args})
-        return r["result"]["content"][0]["text"]
-
-    def test_encontra_por_tag(self):
-        self.assertIn("ponte.png", self._buscar(consulta="ponte", acervo="if-editorial"))
-
-    def test_resultado_traz_o_link(self):
-        self.assertIn("https://drive/1", self._buscar(consulta="ponte", acervo="if-editorial"))
-
-    def test_busca_sem_resultado_explica_em_vez_de_quebrar(self):
-        self.assertIn("nenhum", self._buscar(consulta="helicoptero", acervo="if-editorial").lower())
-
-    def test_acervo_inexistente_lista_os_disponiveis(self):
-        saida = self._buscar(consulta="x", acervo="nao-existe")
-        self.assertIn("if-editorial", saida)
-
-    def test_filtro_de_kind_e_respeitado(self):
-        self.assertIn("nenhum", self._buscar(
-            consulta="ponte", acervo="if-editorial", kind="foto").lower())
-
-    def test_sem_acervo_busca_em_todos(self):
-        self.assertIn("ponte.png", self._buscar(consulta="ponte"))
+    def test_every_tool_declares_an_input_schema(self):
+        for tool in self.call("tools/list")["result"]["tools"]:
+            self.assertIn("inputSchema", tool)
 
 
-class TestStatus(BaseMcp):
-    def test_status_lista_os_acervos_e_o_total(self):
-        r = self.chamar("tools/call", {"name": "lupa_status", "arguments": {}})
-        texto = r["result"]["content"][0]["text"]
-        self.assertIn("if-editorial", texto)
-        self.assertIn("1", texto)
+class TestSearch(McpTestCase):
+    def _search(self, **args):
+        result = self.call("tools/call", {"name": "lupa_search", "arguments": args})
+        return result["result"]["content"][0]["text"]
+
+    def test_it_finds_by_tag(self):
+        self.assertIn("bridge.png", self._search(query="bridge", collection="if-editorial"))
+
+    def test_the_result_carries_the_link(self):
+        self.assertIn("https://example.invalid/1",
+                      self._search(query="bridge", collection="if-editorial"))
+
+    def test_an_empty_result_explains_itself_instead_of_crashing(self):
+        self.assertIn("no results",
+                      self._search(query="helicopter", collection="if-editorial").lower())
+
+    def test_an_unknown_collection_lists_the_available_ones(self):
+        self.assertIn("if-editorial", self._search(query="x", collection="nope"))
+
+    def test_the_kind_filter_is_honored(self):
+        self.assertIn("no results",
+                      self._search(query="bridge", collection="if-editorial", kind="photo").lower())
+
+    def test_without_a_collection_it_searches_all_of_them(self):
+        self.assertIn("bridge.png", self._search(query="bridge"))
+
+
+class TestStatus(McpTestCase):
+    def test_status_lists_collections_and_totals(self):
+        result = self.call("tools/call", {"name": "lupa_status", "arguments": {}})
+        text = result["result"]["content"][0]["text"]
+        self.assertIn("if-editorial", text)
+        self.assertIn("1", text)
 
 
 if __name__ == "__main__":

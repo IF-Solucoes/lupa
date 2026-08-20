@@ -1,82 +1,82 @@
-"""Guarda-corpos. Refazer um índice custa dinheiro e apaga histórico.
+"""Guardrails. Rebuilding an index costs money and destroys history.
 
-Regra: o verbo `index` nunca sobrescreve. Ele detecta o índice existente e
-manda o usuário para o `update`. Refazer exige intenção digitada.
+Rule: `index` never overwrites. It detects the existing index and points the user
+at `update`. Rebuilding requires typed intent.
 """
 import json
 import os
 import time
 from pathlib import Path
 
-IDADE_MAXIMA_LOCK_S = 30 * 60  # meia hora: acima disso, o dono do lock sumiu
+MAX_LOCK_AGE_S = 30 * 60  # half an hour: past that, the lock owner is gone
 
 
-class IndiceJaExiste(Exception):
+class IndexAlreadyExists(Exception):
     pass
 
 
-class LockOcupado(Exception):
+class LockBusy(Exception):
     pass
 
 
-def checar_antes_de_indexar(index_dir, acervo, rebuild=False, confirm=None):
-    """Levanta IndiceJaExiste a menos que o acervo seja virgem, ou que o
-    usuário tenha digitado o nome exato junto de --rebuild."""
-    manifesto = Path(index_dir) / "MANIFEST.json"
-    if not manifesto.exists():
+def check_before_indexing(index_dir, collection, rebuild=False, confirm=None):
+    """Raises IndexAlreadyExists unless the collection is untouched, or the user
+    typed the exact name alongside --rebuild."""
+    manifest = Path(index_dir) / "MANIFEST.json"
+    if not manifest.exists():
         return
 
-    if rebuild and confirm == acervo:
+    if rebuild and confirm == collection:
         return
 
     try:
-        dados = json.loads(manifesto.read_text())
+        data = json.loads(manifest.read_text())
     except (json.JSONDecodeError, OSError):
-        dados = {}
-    total = dados.get("total", "?")
-    rodadas = dados.get("rodadas", "?")
+        data = {}
+    total = data.get("total", "?")
+    runs = data.get("runs", "?")
 
     if not rebuild:
-        raise IndiceJaExiste(
-            f"Este acervo já tem índice: {total} imagens, {rodadas} rodadas.\n"
-            f"  Você provavelmente quer:  lupa update {acervo}\n"
-            f'  Para refazer do zero:     lupa index {acervo} --rebuild --confirm "{acervo}"'
+        raise IndexAlreadyExists(
+            f"This collection is already indexed: {total} images, {runs} runs.\n"
+            f"  You probably want:   lupa update {collection}\n"
+            f'  To rebuild from scratch: lupa index {collection} --rebuild --confirm "{collection}"'
         )
-    raise IndiceJaExiste(
-        f'Refazer o índice apaga {rodadas} rodadas de histórico de "{acervo}".\n'
-        f'  Confirme digitando o nome do acervo:  --confirm "{acervo}"'
+    raise IndexAlreadyExists(
+        f'Rebuilding discards {runs} runs of history for "{collection}".\n'
+        f'  Confirm by typing the collection name:  --confirm "{collection}"'
     )
 
 
-def precisa_confirmar_custo(quantidade, teto):
-    """True quando a rodada vai descrever mais imagens do que o teto permite
-    sem perguntar. Teto 0 desliga a checagem."""
-    return bool(teto) and quantidade > teto
+def needs_cost_confirmation(count, ceiling):
+    """True when the run would describe more images than the ceiling allows
+    without asking. A ceiling of 0 disables the check."""
+    return bool(ceiling) and count > ceiling
 
 
 class Lock:
-    """Impede que duas execuções embaralhem o manifesto. Lock órfão é reciclado."""
+    """Keeps two runs from scrambling the manifest. A stale lock is reclaimed."""
 
     def __init__(self, index_dir):
-        self.caminho = Path(index_dir) / ".lock"
+        self.path = Path(index_dir) / ".lock"
 
     def __enter__(self):
-        if self.caminho.exists() and not self._orfao():
-            raise LockOcupado(
-                f"Outra execução está usando este índice ({self.caminho}). "
-                "Espere ela terminar, ou apague o arquivo se tiver certeza."
+        if self.path.exists() and not self._stale():
+            raise LockBusy(
+                f"Another run is using this index ({self.path}). "
+                "Wait for it to finish, or delete the file if you are sure."
             )
-        self.caminho.parent.mkdir(parents=True, exist_ok=True)
-        self.caminho.write_text(json.dumps({"pid": os.getpid(), "iniciado": time.time()}))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
         return self
 
     def __exit__(self, *_):
-        self.caminho.unlink(missing_ok=True)
+        self.path.unlink(missing_ok=True)
         return False
 
-    def _orfao(self):
+    def _stale(self):
         try:
-            iniciado = json.loads(self.caminho.read_text()).get("iniciado", 0)
+            started = json.loads(self.path.read_text()).get("started", 0)
         except (json.JSONDecodeError, OSError):
-            return True  # lock ilegível é lock morto
-        return (time.time() - iniciado) > IDADE_MAXIMA_LOCK_S
+            return True  # an unreadable lock is a dead lock
+        return (time.time() - started) > MAX_LOCK_AGE_S

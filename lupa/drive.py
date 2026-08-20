@@ -1,179 +1,186 @@
-"""Camada do Google Drive.
+"""Google Drive layer.
 
-O parsing é puro e testado. A rede fica isolada nas funções do fim do arquivo,
-que só são importadas quando há credencial — assim o núcleo roda sem depender
-de bibliotecas do Google.
+Parsing is pure and tested. Network access is isolated in the functions at the
+bottom, imported only when credentials exist — so the core runs without the
+Google client libraries installed.
 """
 import hashlib
 import re
 
-MARCADOR_LABELS = "Image labels:"
+LABELS_MARKER = "Image labels:"
 
-# Campos pedidos à API. Cada um evita uma chamada extra depois.
-CAMPOS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
+# Fields requested from the API. Each one saves a later round trip.
+FIELDS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
           "webViewLink,imageMediaMetadata(width,height,cameraMake,cameraModel)),nextPageToken")
 
 
-def query_da_pasta(folder_id):
-    """Só imagens, só desta pasta, sem lixeira."""
+def folder_query(folder_id):
+    """Images only, this folder only, nothing from the trash."""
     return (f"'{folder_id}' in parents and mimeType contains 'image/' "
             f"and trashed = false")
 
 
-def separar_ocr_e_labels(snippet):
-    """O Drive entrega OCR e labels grudados no mesmo campo. Aqui eles se separam.
+def split_ocr_and_labels(snippet):
+    """Drive returns OCR text and labels glued into one field. This separates them.
 
-    O OCR é útil e sai de graça. Os labels são ruído genérico do Google — guardamos
-    crus, sem confiar neles para classificar.
+    The OCR is useful and free. The labels are generic Google noise — kept raw,
+    never trusted for classification.
     """
     if not snippet:
         return "", []
 
-    partes = snippet.split(MARCADOR_LABELS, 1)
-    ocr = partes[0].strip()
-    if len(partes) == 1:
+    parts = snippet.split(LABELS_MARKER, 1)
+    ocr = parts[0].strip()
+    if len(parts) == 1:
         return ocr, []
 
-    bruto = partes[1].strip().strip("\\").strip()
-    bruto = re.sub(r"^\\?\[|\\?\]$", "", bruto).strip()
-    labels = [l.strip().strip("\\").strip() for l in bruto.split(";")]
-    return ocr, [l for l in labels if l]
+    raw = parts[1].strip().strip("\\").strip()
+    raw = re.sub(r"^\\?\[|\\?\]$", "", raw).strip()
+    labels = [label.strip().strip("\\").strip() for label in raw.split(";")]
+    return ocr, [label for label in labels if label]
 
 
-def _hash_de(bruto):
-    """md5 quando a API dá; senão, uma impressão digital de tamanho + data."""
-    if bruto.get("md5Checksum"):
-        return bruto["md5Checksum"]
-    semente = f"{bruto.get('size', '')}|{bruto.get('modifiedTime', '')}"
-    return hashlib.md5(semente.encode()).hexdigest()
+def _hash_of(raw):
+    """md5 when the API provides one; otherwise a fingerprint of size and date."""
+    if raw.get("md5Checksum"):
+        return raw["md5Checksum"]
+    seed = f"{raw.get('size', '')}|{raw.get('modifiedTime', '')}"
+    return hashlib.md5(seed.encode()).hexdigest()
 
 
-def normalizar_arquivo(bruto):
-    """Converte a resposta da API no formato que o resto do lupa consome."""
-    midia = bruto.get("imageMediaMetadata") or {}
-    ocr, labels = separar_ocr_e_labels(bruto.get("contentSnippet"))
+def normalize_file(raw):
+    """Converts an API response into the shape the rest of lupa consumes."""
+    media = raw.get("imageMediaMetadata") or {}
+    ocr, labels = split_ocr_and_labels(raw.get("contentSnippet"))
 
     exif = {}
-    if midia.get("cameraMake"):
-        exif["Make"] = midia["cameraMake"]
-    if midia.get("cameraModel"):
-        exif["Model"] = midia["cameraModel"]
+    if media.get("cameraMake"):
+        exif["Make"] = media["cameraMake"]
+    if media.get("cameraModel"):
+        exif["Model"] = media["cameraModel"]
 
     return {
-        "id": bruto.get("id"),
-        "file": bruto.get("name"),
-        "mime": bruto.get("mimeType"),
-        "hash": _hash_de(bruto),
-        "size": int(bruto.get("size") or 0),
-        "w": int(midia.get("width") or 0),
-        "h": int(midia.get("height") or 0),
+        "id": raw.get("id"),
+        "file": raw.get("name"),
+        "mime": raw.get("mimeType"),
+        "hash": _hash_of(raw),
+        "size": int(raw.get("size") or 0),
+        "w": int(media.get("width") or 0),
+        "h": int(media.get("height") or 0),
         "exif": exif,
         "ocr_text": ocr,
         "labels": labels,
-        "url": bruto.get("webViewLink") or f"https://drive.google.com/file/d/{bruto.get('id')}/view",
-        "trashed": bool(bruto.get("trashed")),
+        "url": raw.get("webViewLink") or f"https://drive.google.com/file/d/{raw.get('id')}/view",
+        "trashed": bool(raw.get("trashed")),
     }
 
 
-# --- daqui para baixo há rede. Nada disso é importado pelo núcleo. ---
+# --- network below this line. None of it is imported by the core. ---
 
-ESCOPOS = [
-    "https://www.googleapis.com/auth/drive.readonly",  # ler o acervo
-    "https://www.googleapis.com/auth/drive.file",      # escrever SÓ o que criamos
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",  # read the collection
+    "https://www.googleapis.com/auth/drive.file",      # write ONLY what we create
 ]
 
 
-def conectar(client_secret, token_path):
-    """Devolve o serviço do Drive, pedindo login só na primeira vez."""
+def connect(client_secret, token_path):
+    """Returns the Drive service, prompting for sign-in only the first time."""
+    from pathlib import Path
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
-    from pathlib import Path
 
     token_path = Path(token_path).expanduser()
-    cred = None
+    credentials = None
     if token_path.exists():
-        cred = Credentials.from_authorized_user_file(str(token_path), ESCOPOS)
+        credentials = Credentials.from_authorized_user_file(str(token_path), SCOPES)
 
-    if not cred or not cred.valid:
-        if cred and cred.expired and cred.refresh_token:
-            cred.refresh(Request())
+    if not credentials or not credentials.valid:
+        if credentials and credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
         else:
-            fluxo = InstalledAppFlow.from_client_secrets_file(
-                str(Path(client_secret).expanduser()), ESCOPOS)
-            cred = fluxo.run_local_server(port=0)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(Path(client_secret).expanduser()), SCOPES)
+            credentials = flow.run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(cred.to_json())
+        token_path.write_text(credentials.to_json())
 
-    return build("drive", "v3", credentials=cred, cache_discovery=False)
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
-def listar_imagens(servico, folder_id):
-    """Metadados de todas as imagens da pasta. Sem baixar bytes."""
-    arquivos, token = [], None
+def list_images(service, folder_id):
+    """Metadata for every image in the folder. Downloads nothing."""
+    files, page = [], None
     while True:
-        resposta = servico.files().list(
-            q=query_da_pasta(folder_id), fields=CAMPOS, pageSize=1000,
-            pageToken=token, supportsAllDrives=True, includeItemsFromAllDrives=True,
+        response = service.files().list(
+            q=folder_query(folder_id), fields=FIELDS, pageSize=1000,
+            pageToken=page, supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute()
-        arquivos += [normalizar_arquivo(f) for f in resposta.get("files", [])]
-        token = resposta.get("nextPageToken")
-        if not token:
-            return arquivos
+        files += [normalize_file(entry) for entry in response.get("files", [])]
+        page = response.get("nextPageToken")
+        if not page:
+            return files
 
 
-def baixar(servico, file_id, destino):
-    """Baixa um arquivo para o disco local (miniatura de trabalho)."""
+def download(service, file_id, destination):
+    """Fetches one file to local disk (a working copy for the vision model)."""
+    from pathlib import Path
+
     from googleapiclient.http import MediaIoBaseDownload
-    from pathlib import Path
 
-    destino = Path(destino)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    pedido = servico.files().get_media(fileId=file_id)
-    with open(destino, "wb") as saida:
-        baixador = MediaIoBaseDownload(saida, pedido)
-        concluido = False
-        while not concluido:
-            _, concluido = baixador.next_chunk()
-    return destino
-
-
-def garantir_pasta(servico, pai_id, nome):
-    """Acha (ou cria) uma subpasta. É assim que o _lupa/ nasce dentro do acervo."""
-    q = (f"'{pai_id}' in parents and name = '{nome}' and "
-         f"mimeType = 'application/vnd.google-apps.folder' and trashed = false")
-    achados = servico.files().list(q=q, fields="files(id)", supportsAllDrives=True).execute()
-    if achados.get("files"):
-        return achados["files"][0]["id"]
-
-    corpo = {"name": nome, "mimeType": "application/vnd.google-apps.folder", "parents": [pai_id]}
-    return servico.files().create(body=corpo, fields="id", supportsAllDrives=True).execute()["id"]
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    request = service.files().get_media(fileId=file_id)
+    with open(destination, "wb") as handle:
+        downloader = MediaIoBaseDownload(handle, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+    return destination
 
 
-def enviar_arquivo(servico, pasta_id, caminho_local, nome_remoto=None):
-    """Cria ou atualiza um arquivo do índice. Nunca toca arquivo que não criamos."""
-    from googleapiclient.http import MediaFileUpload
-    from pathlib import Path
+def folder_name(service, folder_id):
+    """The name the user sees in Drive — it becomes the collection name."""
+    info = service.files().get(fileId=folder_id, fields="name",
+                               supportsAllDrives=True).execute()
+    return info.get("name") or folder_id
 
-    caminho_local = Path(caminho_local)
-    nome = nome_remoto or caminho_local.name
-    midia = MediaFileUpload(str(caminho_local), resumable=False)
 
-    q = f"'{pasta_id}' in parents and name = '{nome}' and trashed = false"
-    existentes = servico.files().list(q=q, fields="files(id)", supportsAllDrives=True).execute()
-    if existentes.get("files"):
-        fid = existentes["files"][0]["id"]
-        return servico.files().update(fileId=fid, media_body=midia,
-                                      supportsAllDrives=True).execute()["id"]
+def ensure_folder(service, parent_id, name):
+    """Finds (or creates) a subfolder. This is how _lupa/ is born inside a collection."""
+    query = (f"'{parent_id}' in parents and name = '{name}' and "
+             f"mimeType = 'application/vnd.google-apps.folder' and trashed = false")
+    found = service.files().list(q=query, fields="files(id)",
+                                 supportsAllDrives=True).execute()
+    if found.get("files"):
+        return found["files"][0]["id"]
 
-    corpo = {"name": nome, "parents": [pasta_id]}
-    return servico.files().create(body=corpo, media_body=midia, fields="id",
+    body = {"name": name, "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id]}
+    return service.files().create(body=body, fields="id",
                                   supportsAllDrives=True).execute()["id"]
 
 
-def nome_da_pasta(servico, folder_id):
-    """O nome que a pessoa vê no Drive — vira o apelido do acervo."""
-    info = servico.files().get(fileId=folder_id, fields="name",
-                               supportsAllDrives=True).execute()
-    return info.get("name") or folder_id
+def upload_file(service, folder_id, local_path, remote_name=None):
+    """Creates or updates one index file. Never touches a file we did not create."""
+    from pathlib import Path
+
+    from googleapiclient.http import MediaFileUpload
+
+    local_path = Path(local_path)
+    name = remote_name or local_path.name
+    media = MediaFileUpload(str(local_path), resumable=False)
+
+    query = f"'{folder_id}' in parents and name = '{name}' and trashed = false"
+    existing = service.files().list(q=query, fields="files(id)",
+                                    supportsAllDrives=True).execute()
+    if existing.get("files"):
+        file_id = existing["files"][0]["id"]
+        return service.files().update(fileId=file_id, media_body=media,
+                                      supportsAllDrives=True).execute()["id"]
+
+    body = {"name": name, "parents": [folder_id]}
+    return service.files().create(body=body, media_body=media, fields="id",
+                                  supportsAllDrives=True).execute()["id"]

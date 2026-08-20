@@ -1,60 +1,60 @@
-"""Montagem das requisições ao Gemini e leitura do resultado em lote."""
+"""Building Gemini requests and reading batch results."""
 import base64
 import json
 import unittest
-from lupa.gemini import montar_conteudo, linha_de_lote, ler_resultado_de_lote
+from lupa.gemini import build_content, batch_line, read_batch_results
 
-IMG = b"\x89PNG\r\n\x1a\n-bytes-de-teste"
+IMG = b"\x89PNG\r\n\x1a\n-test-bytes"
 
 
-class TestConteudo(unittest.TestCase):
-    def test_manda_a_imagem_em_base64(self):
-        c = montar_conteudo("descreva", IMG, "image/png")
-        dados = c["contents"][0]["parts"][1]["inline_data"]
-        self.assertEqual(dados["mime_type"], "image/png")
-        self.assertEqual(base64.b64decode(dados["data"]), IMG)
+class TestContent(unittest.TestCase):
+    def test_it_sends_the_image_as_base64(self):
+        c = build_content("describe", IMG, "image/png")
+        data = c["contents"][0]["parts"][1]["inline_data"]
+        self.assertEqual(data["mime_type"], "image/png")
+        self.assertEqual(base64.b64decode(data["data"]), IMG)
 
-    def test_manda_o_prompt_junto(self):
-        c = montar_conteudo("descreva isso", IMG, "image/png")
-        self.assertEqual(c["contents"][0]["parts"][0]["text"], "descreva isso")
+    def test_it_sends_the_prompt_alongside(self):
+        c = build_content("describe this", IMG, "image/png")
+        self.assertEqual(c["contents"][0]["parts"][0]["text"], "describe this")
 
-    def test_pede_json_ao_modelo(self):
-        c = montar_conteudo("x", IMG, "image/png")
+    def test_it_asks_the_model_for_json(self):
+        c = build_content("x", IMG, "image/png")
         self.assertEqual(c["generationConfig"]["responseMimeType"], "application/json")
 
 
-class TestLote(unittest.TestCase):
-    def test_cada_linha_carrega_a_chave_de_volta(self):
-        linha = json.loads(linha_de_lote("id-42", "prompt", IMG, "image/png"))
-        self.assertEqual(linha["key"], "id-42")
+class TestBatch(unittest.TestCase):
+    def test_each_line_carries_its_key_back(self):
+        line = json.loads(batch_line("id-42", "prompt", IMG, "image/png"))
+        self.assertEqual(line["key"], "id-42")
 
-    def test_cada_linha_e_json_de_uma_linha_so(self):
-        self.assertNotIn("\n", linha_de_lote("id-42", "p", IMG, "image/png"))
+    def test_each_line_is_single_line_json(self):
+        self.assertNotIn("\n", batch_line("id-42", "p", IMG, "image/png"))
 
-    def test_resultado_volta_indexado_pela_chave(self):
-        bruto = "\n".join([
+    def test_results_come_back_keyed(self):
+        raw = "\n".join([
             json.dumps({"key": "a", "response": {"candidates": [
-                {"content": {"parts": [{"text": '{"caption": "primeira"}'}]}}]}}),
+                {"content": {"parts": [{"text": '{"caption": "first"}'}]}}]}}),
             json.dumps({"key": "b", "response": {"candidates": [
-                {"content": {"parts": [{"text": '{"caption": "segunda"}'}]}}]}}),
+                {"content": {"parts": [{"text": '{"caption": "second"}'}]}}]}}),
         ])
-        r = ler_resultado_de_lote(bruto)
-        self.assertEqual(r["a"]["caption"], "primeira")
-        self.assertEqual(r["b"]["caption"], "segunda")
+        r = read_batch_results(raw)
+        self.assertEqual(r["a"]["caption"], "first")
+        self.assertEqual(r["b"]["caption"], "second")
 
-    def test_item_que_falhou_no_lote_nao_derruba_os_outros(self):
-        bruto = "\n".join([
+    def test_a_failed_item_does_not_take_down_the_others(self):
+        raw = "\n".join([
             json.dumps({"key": "a", "error": {"message": "quota"}}),
             json.dumps({"key": "b", "response": {"candidates": [
                 {"content": {"parts": [{"text": '{"caption": "ok"}'}]}}]}}),
         ])
-        r = ler_resultado_de_lote(bruto)
+        r = read_batch_results(raw)
         self.assertNotIn("a", r)
         self.assertEqual(r["b"]["caption"], "ok")
 
-    def test_linha_em_branco_no_meio_do_lote_e_ignorada(self):
-        bruto = '\n\n{"key": "b", "response": {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}}\n\n'
-        self.assertEqual(list(ler_resultado_de_lote(bruto)), ["b"])
+    def test_a_blank_line_in_the_batch_is_ignored(self):
+        raw = '\n\n{"key": "b", "response": {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}}\n\n'
+        self.assertEqual(list(read_batch_results(raw)), ["b"])
 
 
 if __name__ == "__main__":

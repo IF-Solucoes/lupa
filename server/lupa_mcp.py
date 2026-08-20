@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Entrada do servidor MCP do lupa — transporte stdio, JSON por linha.
+"""lupa MCP server entry point — stdio transport, one JSON message per line.
 
-Zero dependências: sobe em qualquer máquina onde o cliente MCP rode, sem venv,
-sem instalação, sem bootstrap. Só lê índices já escritos.
+Zero dependencies: it starts on any machine where an MCP client runs, with no
+venv, no install, no bootstrap. It only reads indexes that already exist.
 """
 import json
 import os
@@ -11,26 +11,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lupa.config import ler_env, resolver_raiz_indices  # noqa: E402
-from lupa.mcp import Servidor  # noqa: E402
+from lupa.config import read_env, resolve_index_root  # noqa: E402
+from lupa.mcp import Server  # noqa: E402
 
 
 def main():
-    raiz = resolver_raiz_indices(os.environ, ler_env())
-    servidor = Servidor(raiz)
+    server = Server(resolve_index_root(os.environ, read_env()))
 
-    for linha in sys.stdin:
-        linha = linha.strip()
-        if not linha:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
             continue
         try:
-            pedido = json.loads(linha)
+            request = json.loads(line)
         except json.JSONDecodeError:
             continue
 
-        resposta = servidor.despachar(pedido)
-        if resposta is not None:
-            sys.stdout.write(json.dumps(resposta, ensure_ascii=False) + "\n")
+        response = server.dispatch(request)
+        if response is not None:
+            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
 
 

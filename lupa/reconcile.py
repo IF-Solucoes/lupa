@@ -1,47 +1,47 @@
-"""Reconciliação incremental entre o acervo remoto e o que já foi indexado.
+"""Incremental reconciliation between the remote collection and what is indexed.
 
-Cada imagem é descrita uma vez na vida. O que a rodada seguinte faz é comparar
-identificadores e hashes — operação de metadado, sem baixar bytes nem gastar IA.
+Every image is described once in its life. What later runs do is compare ids and
+hashes — a metadata operation, with no downloads and no model calls.
 """
 from dataclasses import dataclass, field
 
 
 @dataclass
-class Plano:
-    novas: list = field(default_factory=list)
-    alteradas: list = field(default_factory=list)
-    sumidas: list = field(default_factory=list)
-    intactas: list = field(default_factory=list)
+class Plan:
+    added: list = field(default_factory=list)
+    changed: list = field(default_factory=list)
+    removed: list = field(default_factory=list)
+    unchanged: list = field(default_factory=list)
 
     @property
-    def a_descrever(self) -> list:
-        """Ids que custam uma chamada ao modelo de visão."""
-        return self.novas + self.alteradas
+    def to_describe(self):
+        """Ids that cost a vision-model call."""
+        return self.added + self.changed
 
     @property
-    def vazio(self) -> bool:
-        """True quando não há nada a fazer — nem descrever, nem reescrever."""
-        return not (self.novas or self.alteradas or self.sumidas)
+    def empty(self):
+        """True when there is nothing to do — nothing to describe, nothing to rewrite."""
+        return not (self.added or self.changed or self.removed)
 
-    def resumo(self) -> str:
-        return (f"+{len(self.novas)} novas · ~{len(self.alteradas)} alteradas · "
-                f"-{len(self.sumidas)} removidas · ={len(self.intactas)} intactas")
+    def summary(self):
+        return (f"+{len(self.added)} added · ~{len(self.changed)} changed · "
+                f"-{len(self.removed)} removed · ={len(self.unchanged)} unchanged")
 
 
-def reconcile(remoto: list, manifesto: dict) -> Plano:
-    """remoto: [{id, hash, name, trashed?}] · manifesto: {"itens": {id: {hash}}}"""
-    indexado = manifesto.get("itens", {})
-    vivos = {f["id"]: f for f in remoto if not f.get("trashed")}
-    plano = Plano()
+def reconcile(remote, manifest):
+    """remote: [{id, hash, name, trashed?}] · manifest: {"items": {id: {hash}}}"""
+    indexed = manifest.get("items", {})
+    live = {f["id"]: f for f in remote if not f.get("trashed")}
+    plan = Plan()
 
-    for fid, f in vivos.items():
-        anterior = indexado.get(fid)
-        if anterior is None:
-            plano.novas.append(fid)
-        elif anterior.get("hash") != f.get("hash"):
-            plano.alteradas.append(fid)
+    for file_id, entry in live.items():
+        previous = indexed.get(file_id)
+        if previous is None:
+            plan.added.append(file_id)
+        elif previous.get("hash") != entry.get("hash"):
+            plan.changed.append(file_id)
         else:
-            plano.intactas.append(fid)
+            plan.unchanged.append(file_id)
 
-    plano.sumidas = [fid for fid in indexado if fid not in vivos]
-    return plano
+    plan.removed = [file_id for file_id in indexed if file_id not in live]
+    return plan

@@ -1,106 +1,106 @@
-"""Pré-flight: diagnostica o ambiente e ensina o caminho antes de gastar."""
+"""Preflight: diagnose the environment and teach the way before spending."""
 import tempfile
 import unittest
 from pathlib import Path
 
-from lupa.alvo import Alvo
-from lupa.preflight import diagnosticar, BLOQUEIO, AVISO, OK, tem_bloqueio
+from lupa.target import Target
+from lupa.preflight import diagnose, BLOCKER, WARNING, OK, has_blocker
 
 
-def alvo_drive():
-    return Alvo("drive", "if-editorial", folder_id="ABC123")
+def drive_target():
+    return Target("drive", "if-editorial", folder_id="ABC123")
 
 
-def alvo_local(caminho):
-    return Alvo("local", "fotos", caminho=Path(caminho))
+def local_target(path):
+    return Target("local", "photos", path=Path(path))
 
 
-ENV_COMPLETO = {"GEMINI_API_KEY": "abc", "LUPA_OAUTH_CLIENT": "/existe/oauth.json",
+FULL_ENV = {"GEMINI_API_KEY": "abc", "LUPA_OAUTH_CLIENT": "/existe/oauth.json",
                 "LUPA_OAUTH_TOKEN": "/existe/token.json"}
 
 
-class TestChave(unittest.TestCase):
-    def test_sem_chave_do_gemini_bloqueia(self):
-        c = diagnosticar(alvo_drive(), env={}, arquivos_existentes=set())
-        chave = [x for x in c if x.nome == "chave do Gemini"][0]
-        self.assertEqual(chave.status, BLOQUEIO)
+class TestKey(unittest.TestCase):
+    def test_a_missing_gemini_key_blocks(self):
+        c = diagnose(drive_target(), env={}, existing_files=set())
+        key_check = [x for x in c if x.name == "Gemini key"][0]
+        self.assertEqual(key_check.status, BLOCKER)
 
-    def test_a_mensagem_diz_onde_arrumar_a_chave(self):
-        c = diagnosticar(alvo_drive(), env={}, arquivos_existentes=set())
-        chave = [x for x in c if x.nome == "chave do Gemini"][0]
-        self.assertIn("aistudio.google.com", chave.como_resolver)
-        self.assertIn("lupa.env", chave.como_resolver)
+    def test_the_message_says_where_to_get_the_key(self):
+        c = diagnose(drive_target(), env={}, existing_files=set())
+        key_check = [x for x in c if x.name == "Gemini key"][0]
+        self.assertIn("aistudio.google.com", key_check.how_to_fix)
+        self.assertIn("lupa.env", key_check.how_to_fix)
 
-    def test_com_chave_passa(self):
-        c = diagnosticar(alvo_drive(), env=ENV_COMPLETO,
-                         arquivos_existentes={"/existe/oauth.json", "/existe/token.json"})
-        chave = [x for x in c if x.nome == "chave do Gemini"][0]
-        self.assertEqual(chave.status, OK)
+    def test_with_a_key_it_passes(self):
+        c = diagnose(drive_target(), env=FULL_ENV,
+                         existing_files={"/existe/oauth.json", "/existe/token.json"})
+        key_check = [x for x in c if x.name == "Gemini key"][0]
+        self.assertEqual(key_check.status, OK)
 
 
-class TestCredencialDoDrive(unittest.TestCase):
-    def test_sem_oauth_client_bloqueia_alvo_no_drive(self):
-        c = diagnosticar(alvo_drive(), env={"GEMINI_API_KEY": "x"}, arquivos_existentes=set())
-        oauth = [x for x in c if x.nome == "acesso ao Google Drive"][0]
-        self.assertEqual(oauth.status, BLOQUEIO)
-        self.assertIn("console.cloud.google.com", oauth.como_resolver)
+class TestDriveCredentials(unittest.TestCase):
+    def test_a_missing_oauth_client_blocks_a_drive_target(self):
+        c = diagnose(drive_target(), env={"GEMINI_API_KEY": "x"}, existing_files=set())
+        oauth = [x for x in c if x.name == "Google Drive access"][0]
+        self.assertEqual(oauth.status, BLOCKER)
+        self.assertIn("console.cloud.google.com", oauth.how_to_fix)
 
-    def test_sem_token_apenas_avisa_que_vai_pedir_login(self):
-        c = diagnosticar(alvo_drive(), env=ENV_COMPLETO,
-                         arquivos_existentes={"/existe/oauth.json"})
-        login = [x for x in c if x.nome == "login do Google"][0]
-        self.assertEqual(login.status, AVISO)
+    def test_a_missing_token_only_warns_about_sign_in(self):
+        c = diagnose(drive_target(), env=FULL_ENV,
+                         existing_files={"/existe/oauth.json"})
+        signin = [x for x in c if x.name == "Google sign-in"][0]
+        self.assertEqual(signin.status, WARNING)
 
-    def test_alvo_local_nao_exige_credencial_do_drive(self):
+    def test_a_local_target_needs_no_drive_credentials(self):
         with tempfile.TemporaryDirectory() as d:
-            c = diagnosticar(alvo_local(d), env={"GEMINI_API_KEY": "x"},
-                             arquivos_existentes=set())
-            self.assertFalse(any(x.nome == "acesso ao Google Drive" for x in c))
-            self.assertFalse(tem_bloqueio(c))
+            c = diagnose(local_target(d), env={"GEMINI_API_KEY": "x"},
+                             existing_files=set())
+            self.assertFalse(any(x.name == "Google Drive access" for x in c))
+            self.assertFalse(has_blocker(c))
 
 
-class TestDriveMontado(unittest.TestCase):
-    def test_pasta_montada_do_drive_gera_aviso_explicativo(self):
-        c = diagnosticar(alvo_local("/mnt/g/Meu Drive/Clientes"), env={"GEMINI_API_KEY": "x"},
-                         arquivos_existentes=set())
-        aviso = [x for x in c if x.nome == "origem do acervo"][0]
-        self.assertEqual(aviso.status, AVISO)
-        self.assertIn("OCR", aviso.como_resolver)
+class TestMountedDrive(unittest.TestCase):
+    def test_a_mounted_drive_folder_raises_an_explanatory_warning(self):
+        c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},
+                         existing_files=set())
+        warning = [x for x in c if x.name == "collection source"][0]
+        self.assertEqual(warning.status, WARNING)
+        self.assertIn("OCR", warning.how_to_fix)
 
-    def test_o_aviso_nao_bloqueia_a_execucao(self):
-        c = diagnosticar(alvo_local("/mnt/g/Meu Drive/Clientes"), env={"GEMINI_API_KEY": "x"},
-                         arquivos_existentes=set())
-        self.assertFalse(tem_bloqueio(c))
+    def test_the_warning_does_not_block_the_run(self):
+        c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},
+                         existing_files=set())
+        self.assertFalse(has_blocker(c))
 
-    def test_pasta_comum_nao_gera_esse_aviso(self):
+    def test_an_ordinary_folder_raises_no_such_warning(self):
         with tempfile.TemporaryDirectory() as d:
-            c = diagnosticar(alvo_local(d), env={"GEMINI_API_KEY": "x"}, arquivos_existentes=set())
-            origem = [x for x in c if x.nome == "origem do acervo"][0]
-            self.assertEqual(origem.status, OK)
+            c = diagnose(local_target(d), env={"GEMINI_API_KEY": "x"}, existing_files=set())
+            source = [x for x in c if x.name == "collection source"][0]
+            self.assertEqual(source.status, OK)
 
 
-class TestIndiceExistente(unittest.TestCase):
-    def test_avisa_que_sera_atualizacao_e_nao_criacao(self):
-        c = diagnosticar(alvo_drive(), env=ENV_COMPLETO, arquivos_existentes=set(),
-                         indice_existe=True)
-        estado = [x for x in c if x.nome == "estado do índice"][0]
-        self.assertIn("update", estado.mensagem.lower())
+class TestExistingIndex(unittest.TestCase):
+    def test_it_says_this_will_be_an_update(self):
+        c = diagnose(drive_target(), env=FULL_ENV, existing_files=set(),
+                         index_exists=True)
+        state = [x for x in c if x.name == "index state"][0]
+        self.assertIn("update", state.message.lower())
 
-    def test_acervo_virgem_diz_que_sera_a_primeira_rodada(self):
-        c = diagnosticar(alvo_drive(), env=ENV_COMPLETO, arquivos_existentes=set(),
-                         indice_existe=False)
-        estado = [x for x in c if x.nome == "estado do índice"][0]
-        self.assertIn("primeira", estado.mensagem.lower())
+    def test_an_untouched_collection_says_first_run(self):
+        c = diagnose(drive_target(), env=FULL_ENV, existing_files=set(),
+                         index_exists=False)
+        state = [x for x in c if x.name == "index state"][0]
+        self.assertIn("first run", state.message.lower())
 
 
-class TestResumo(unittest.TestCase):
-    def test_tem_bloqueio_detecta_qualquer_impedimento(self):
-        self.assertTrue(tem_bloqueio(diagnosticar(alvo_drive(), env={}, arquivos_existentes=set())))
+class TestSummary(unittest.TestCase):
+    def test_has_blocker_detects_any_impediment(self):
+        self.assertTrue(has_blocker(diagnose(drive_target(), env={}, existing_files=set())))
 
-    def test_ambiente_completo_nao_tem_bloqueio(self):
-        c = diagnosticar(alvo_drive(), env=ENV_COMPLETO,
-                         arquivos_existentes={"/existe/oauth.json", "/existe/token.json"})
-        self.assertFalse(tem_bloqueio(c))
+    def test_ambiente_completo_nao_has_blocker(self):
+        c = diagnose(drive_target(), env=FULL_ENV,
+                         existing_files={"/existe/oauth.json", "/existe/token.json"})
+        self.assertFalse(has_blocker(c))
 
 
 if __name__ == "__main__":

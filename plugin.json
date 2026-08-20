@@ -1,8 +1,8 @@
 {
   "name": "lupa",
-  "version": "0.1.0",
-  "description": "Índice de acervo visual para agentes: cria, atualiza e pesquisa descrições de imagens do Google Drive sem que a IA precise abrir as imagens.",
-  "author": "Victor Ferreira",
+  "version": "0.2.0",
+  "description": "Visual collection index for AI agents: create, update and search image descriptions from Google Drive or a local folder, so the agent never has to open the images.",
+  "author": "IF Soluções",
   "homepage": "https://github.com/IF-Solucoes/lupa",
   "license": "MIT"
 }

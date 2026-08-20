@@ -1,151 +1,152 @@
-"""Integração: o ciclo index → update → update sem rede e sem gastar modelo."""
+"""Integration: the index → update → update cycle, no network, no model spend."""
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from lupa.guards import IndiceJaExiste
-from lupa.pipeline import rodar
+from lupa.guards import IndexAlreadyExists
+from lupa.pipeline import run
 
 
-class AcervoFake:
-    """Um Drive de mentira: devolve metadados e bytes de imagem."""
+class FakeSource:
+    """A pretend Drive: returns metadata and image bytes."""
 
-    def __init__(self, arquivos):
-        self.arquivos = arquivos
-        self.baixados = []
+    def __init__(self, files):
+        self.files = files
+        self.fetched = []
 
-    def listar(self):
-        return list(self.arquivos)
+    def list(self):
+        return list(self.files)
 
-    def baixar(self, file_id):
-        self.baixados.append(file_id)
+    def fetch(self, file_id):
+        self.fetched.append(file_id)
         return b"bytes", "image/png"
 
 
-class ModeloFake:
-    """Conta quantas vezes foi chamado — é a métrica que prova o incremental."""
+class FakeModel:
+    """Counts its calls — the metric that proves the incremental behavior."""
 
     def __init__(self):
-        self.chamadas = []
+        self.calls = []
 
-    def __call__(self, item, imagem, mime):
-        self.chamadas.append(item["id"])
-        return {"caption": f"desc de {item['file']}", "tags": ["tag-comum", item["id"]],
-                "scene": "interior", "people": 0, "palette": ["#000000"]}
-
-
-def arquivo(id_, hash_, nome=None):
-    return {"id": id_, "file": nome or f"{id_}.png", "hash": hash_, "mime": "image/png",
-            "w": 1080, "h": 1350, "exif": {}, "ocr_text": "TEXTO " * 10, "labels": [],
-            "url": f"https://drive/{id_}", "trashed": False, "size": 100}
+    def __call__(self, item, image, mime):
+        self.calls.append(item["id"])
+        return {"caption": f"description of {item['file']}",
+                "tags": ["shared-tag", item["id"]],
+                "scene": "indoor", "people": 0, "palette": ["#000000"]}
 
 
-class BasePipeline(unittest.TestCase):
+def a_file(file_id, digest, name=None):
+    return {"id": file_id, "file": name or f"{file_id}.png", "hash": digest,
+            "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+            "ocr_text": "TEXT " * 10, "labels": [],
+            "url": f"https://example.invalid/{file_id}", "trashed": False, "size": 100}
+
+
+class PipelineTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name) / "_lupa"
-        self.modelo = ModeloFake()
+        self.model = FakeModel()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def rodar(self, acervo_fake, modo="update", **kw):
-        return rodar(acervo="if-editorial", index_dir=self.dir, fonte=acervo_fake,
-                     descrever=self.modelo, modo=modo, agora=kw.pop("agora", "2026-08-20T10-00-00"),
-                     **kw)
+    def execute(self, source, mode="update", **kw):
+        return run(collection="if-editorial", index_dir=self.dir, source=source,
+                   describe=self.model, mode=mode,
+                   now=kw.pop("now", "2026-08-20T10-00-00"), **kw)
 
-    def catalogo(self):
-        linhas = (self.dir / "catalog.jsonl").read_text().strip().splitlines()
-        return [json.loads(l) for l in linhas if l.strip()]
-
-
-class TestPrimeiraRodada(BasePipeline):
-    def test_indexa_tudo_e_escreve_o_indice(self):
-        fonte = AcervoFake([arquivo("a", "1"), arquivo("b", "2")])
-        r = self.rodar(fonte, modo="index")
-        self.assertEqual(sorted(self.modelo.chamadas), ["a", "b"])
-        self.assertEqual(len(self.catalogo()), 2)
-        self.assertEqual(r["plano"].novas, ["a", "b"])
-
-    def test_index_em_acervo_ja_indexado_recusa(self):
-        fonte = AcervoFake([arquivo("a", "1")])
-        self.rodar(fonte, modo="index")
-        with self.assertRaises(IndiceJaExiste):
-            self.rodar(fonte, modo="index")
+    def catalog(self):
+        lines = (self.dir / "catalog.jsonl").read_text().strip().splitlines()
+        return [json.loads(line) for line in lines if line.strip()]
 
 
-class TestIncremental(BasePipeline):
+class TestFirstRun(PipelineTestCase):
+    def test_it_indexes_everything_and_writes_the_index(self):
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = self.execute(source, mode="index")
+        self.assertEqual(sorted(self.model.calls), ["a", "b"])
+        self.assertEqual(len(self.catalog()), 2)
+        self.assertEqual(result["plan"].added, ["a", "b"])
+
+    def test_indexing_an_already_indexed_collection_is_refused(self):
+        source = FakeSource([a_file("a", "1")])
+        self.execute(source, mode="index")
+        with self.assertRaises(IndexAlreadyExists):
+            self.execute(source, mode="index")
+
+
+class TestIncremental(PipelineTestCase):
     def setUp(self):
         super().setUp()
-        self.fonte = AcervoFake([arquivo("a", "1"), arquivo("b", "2")])
-        self.rodar(self.fonte, modo="index")
-        self.modelo.chamadas.clear()
+        self.source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        self.execute(self.source, mode="index")
+        self.model.calls.clear()
 
-    def test_rodada_sem_mudanca_nao_chama_o_modelo(self):
-        self.rodar(self.fonte)
-        self.assertEqual(self.modelo.chamadas, [])
+    def test_a_run_without_changes_never_calls_the_model(self):
+        self.execute(self.source)
+        self.assertEqual(self.model.calls, [])
 
-    def test_rodada_sem_mudanca_nao_baixa_imagem(self):
-        self.fonte.baixados.clear()
-        self.rodar(self.fonte)
-        self.assertEqual(self.fonte.baixados, [])
+    def test_a_run_without_changes_downloads_nothing(self):
+        self.source.fetched.clear()
+        self.execute(self.source)
+        self.assertEqual(self.source.fetched, [])
 
-    def test_arquivo_novo_e_descrito_sozinho(self):
-        self.fonte.arquivos.append(arquivo("c", "3"))
-        self.rodar(self.fonte)
-        self.assertEqual(self.modelo.chamadas, ["c"])
-        self.assertEqual(len(self.catalogo()), 3)
+    def test_a_new_file_is_described_on_its_own(self):
+        self.source.files.append(a_file("c", "3"))
+        self.execute(self.source)
+        self.assertEqual(self.model.calls, ["c"])
+        self.assertEqual(len(self.catalog()), 3)
 
-    def test_arquivo_alterado_e_redescrito(self):
-        self.fonte.arquivos[0] = arquivo("a", "HASH-NOVO")
-        self.rodar(self.fonte)
-        self.assertEqual(self.modelo.chamadas, ["a"])
+    def test_a_changed_file_is_described_again(self):
+        self.source.files[0] = a_file("a", "NEW-HASH")
+        self.execute(self.source)
+        self.assertEqual(self.model.calls, ["a"])
 
-    def test_arquivo_apagado_some_do_catalogo_sem_custo(self):
-        self.fonte.arquivos.pop(0)  # "a" foi embora
-        self.rodar(self.fonte)
-        self.assertEqual(self.modelo.chamadas, [])
-        self.assertEqual([i["id"] for i in self.catalogo()], ["b"])
+    def test_a_deleted_file_leaves_the_catalog_for_free(self):
+        self.source.files.pop(0)  # "a" is gone
+        self.execute(self.source)
+        self.assertEqual(self.model.calls, [])
+        self.assertEqual([item["id"] for item in self.catalog()], ["b"])
 
-    def test_descricao_antiga_sobrevive_a_rodada(self):
-        self.fonte.arquivos.append(arquivo("c", "3"))
-        self.rodar(self.fonte)
-        antigo = [i for i in self.catalogo() if i["id"] == "a"][0]
-        self.assertEqual(antigo["caption"], "desc de a.png")
+    def test_an_old_description_survives_the_run(self):
+        self.source.files.append(a_file("c", "3"))
+        self.execute(self.source)
+        previous = [i for i in self.catalog() if i["id"] == "a"][0]
+        self.assertEqual(previous["caption"], "description of a.png")
 
 
-class TestPlanoSemGastar(BasePipeline):
-    def test_dry_run_nao_chama_o_modelo(self):
-        fonte = AcervoFake([arquivo("a", "1")])
-        r = self.rodar(fonte, modo="index", dry_run=True)
-        self.assertEqual(self.modelo.chamadas, [])
-        self.assertEqual(r["plano"].novas, ["a"])
+class TestPlanWithoutSpending(PipelineTestCase):
+    def test_dry_run_never_calls_the_model(self):
+        source = FakeSource([a_file("a", "1")])
+        result = self.execute(source, mode="index", dry_run=True)
+        self.assertEqual(self.model.calls, [])
+        self.assertEqual(result["plan"].added, ["a"])
 
-    def test_dry_run_nao_escreve_indice(self):
-        fonte = AcervoFake([arquivo("a", "1")])
-        self.rodar(fonte, modo="index", dry_run=True)
+    def test_dry_run_writes_no_index(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index", dry_run=True)
         self.assertFalse((self.dir / "catalog.jsonl").exists())
 
-    def test_dry_run_estima_o_custo(self):
-        fonte = AcervoFake([arquivo(str(i), "h") for i in range(10)])
-        r = self.rodar(fonte, modo="index", dry_run=True)
-        self.assertGreater(r["custo_estimado"], 0)
+    def test_dry_run_estimates_the_cost(self):
+        source = FakeSource([a_file(str(i), "h") for i in range(10)])
+        result = self.execute(source, mode="index", dry_run=True)
+        self.assertGreater(result["estimated_cost"], 0)
 
 
-class TestFalhaIsolada(BasePipeline):
-    def test_imagem_que_falha_nao_derruba_a_rodada(self):
-        def modelo_que_falha(item, imagem, mime):
+class TestIsolatedFailure(PipelineTestCase):
+    def test_a_failing_image_does_not_sink_the_run(self):
+        def failing_model(item, image, mime):
             if item["id"] == "b":
-                raise RuntimeError("imagem corrompida")
+                raise RuntimeError("corrupted image")
             return {"caption": "ok", "tags": ["t"]}
 
-        fonte = AcervoFake([arquivo("a", "1"), arquivo("b", "2")])
-        r = rodar(acervo="x", index_dir=self.dir, fonte=fonte, descrever=modelo_que_falha,
-                  modo="index", agora="2026-08-20T10-00-00")
-        self.assertEqual([i["id"] for i in self.catalogo()], ["a"])
-        self.assertEqual(len(r["falhas"]), 1)
-        self.assertIn("corrompida", r["falhas"][0]["erro"])
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = run(collection="x", index_dir=self.dir, source=source,
+                     describe=failing_model, mode="index", now="2026-08-20T10-00-00")
+        self.assertEqual([item["id"] for item in self.catalog()], ["a"])
+        self.assertEqual(len(result["failures"]), 1)
+        self.assertIn("corrupted", result["failures"][0]["error"])
 
 
 if __name__ == "__main__":

@@ -1,16 +1,16 @@
-"""Guarda-corpos: o índice não se refaz por acidente."""
+"""Guardrails: the index does not rebuild itself by accident."""
 import time
 import tempfile
 import unittest
 from pathlib import Path
 
 from lupa.guards import (
-    IndiceJaExiste, LockOcupado, checar_antes_de_indexar,
-    precisa_confirmar_custo, Lock, IDADE_MAXIMA_LOCK_S,
+    IndexAlreadyExists, LockBusy, check_before_indexing,
+    needs_cost_confirmation, Lock, MAX_LOCK_AGE_S,
 )
 
 
-class TestIndexNaoSobrescreve(unittest.TestCase):
+class TestIndexDoesNotOverwrite(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
@@ -18,50 +18,50 @@ class TestIndexNaoSobrescreve(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _com_indice(self, total=3412):
+    def _with_index(self, total=3412):
         (self.dir / "MANIFEST.json").write_text(
-            '{"acervo": "if-editorial", "total": %d, "rodadas": 6}' % total)
+            '{"collection": "if-editorial", "total": %d, "runs": 6}' % total)
 
-    def test_acervo_virgem_pode_indexar(self):
-        checar_antes_de_indexar(self.dir, acervo="if-editorial")  # não levanta
+    def test_an_untouched_collection_can_be_indexed(self):
+        check_before_indexing(self.dir, collection="if-editorial")  # does not raise
 
-    def test_acervo_ja_indexado_recusa(self):
-        self._com_indice()
-        with self.assertRaises(IndiceJaExiste):
-            checar_antes_de_indexar(self.dir, acervo="if-editorial")
+    def test_an_indexed_collection_is_refused(self):
+        self._with_index()
+        with self.assertRaises(IndexAlreadyExists):
+            check_before_indexing(self.dir, collection="if-editorial")
 
-    def test_recusa_aponta_para_o_update(self):
-        self._com_indice()
-        with self.assertRaises(IndiceJaExiste) as ctx:
-            checar_antes_de_indexar(self.dir, acervo="if-editorial")
+    def test_the_refusal_points_at_update(self):
+        self._with_index()
+        with self.assertRaises(IndexAlreadyExists) as ctx:
+            check_before_indexing(self.dir, collection="if-editorial")
         self.assertIn("lupa update", str(ctx.exception))
 
-    def test_rebuild_sem_confirmacao_recusa(self):
-        self._com_indice()
-        with self.assertRaises(IndiceJaExiste):
-            checar_antes_de_indexar(self.dir, acervo="if-editorial", rebuild=True)
+    def test_rebuild_without_confirmation_is_refused(self):
+        self._with_index()
+        with self.assertRaises(IndexAlreadyExists):
+            check_before_indexing(self.dir, collection="if-editorial", rebuild=True)
 
-    def test_rebuild_com_nome_errado_recusa(self):
-        self._com_indice()
-        with self.assertRaises(IndiceJaExiste):
-            checar_antes_de_indexar(self.dir, acervo="if-editorial",
-                                    rebuild=True, confirm="outro-acervo")
+    def test_rebuild_with_the_wrong_name_is_refused(self):
+        self._with_index()
+        with self.assertRaises(IndexAlreadyExists):
+            check_before_indexing(self.dir, collection="if-editorial",
+                                    rebuild=True, confirm="other-collection")
 
-    def test_rebuild_com_nome_exato_passa(self):
-        self._com_indice()
-        checar_antes_de_indexar(self.dir, acervo="if-editorial",
+    def test_rebuild_with_the_exact_name_passes(self):
+        self._with_index()
+        check_before_indexing(self.dir, collection="if-editorial",
                                 rebuild=True, confirm="if-editorial")
 
 
-class TestTetoDeCusto(unittest.TestCase):
-    def test_abaixo_do_teto_segue_sem_perguntar(self):
-        self.assertFalse(precisa_confirmar_custo(199, teto=200))
+class TestCostCeiling(unittest.TestCase):
+    def test_below_the_ceiling_it_does_not_ask(self):
+        self.assertFalse(needs_cost_confirmation(199, ceiling=200))
 
-    def test_acima_do_teto_pede_confirmacao(self):
-        self.assertTrue(precisa_confirmar_custo(201, teto=200))
+    def test_above_the_ceiling_it_asks(self):
+        self.assertTrue(needs_cost_confirmation(201, ceiling=200))
 
-    def test_teto_zero_desliga_a_pergunta(self):
-        self.assertFalse(precisa_confirmar_custo(9999, teto=0))
+    def test_a_zero_ceiling_disables_the_question(self):
+        self.assertFalse(needs_cost_confirmation(9999, ceiling=0))
 
 
 class TestLock(unittest.TestCase):
@@ -72,28 +72,28 @@ class TestLock(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_segunda_execucao_simultanea_e_barrada(self):
+    def test_a_second_concurrent_run_is_blocked(self):
         with Lock(self.dir):
-            with self.assertRaises(LockOcupado):
+            with self.assertRaises(LockBusy):
                 with Lock(self.dir):
                     pass
 
-    def test_lock_e_liberado_ao_sair(self):
+    def test_the_lock_is_released_on_exit(self):
         with Lock(self.dir):
             pass
-        with Lock(self.dir):  # não levanta
+        with Lock(self.dir):  # does not raise
             pass
 
-    def test_lock_orfao_e_reaproveitado(self):
-        velho = time.time() - IDADE_MAXIMA_LOCK_S - 60
-        (self.dir / ".lock").write_text('{"pid": 999999, "iniciado": %f}' % velho)
-        with Lock(self.dir):  # não levanta: o dono sumiu faz tempo
+    def test_a_stale_lock_is_reclaimed(self):
+        stale = time.time() - MAX_LOCK_AGE_S - 60
+        (self.dir / ".lock").write_text('{"pid": 999999, "started": %f}' % stale)
+        with Lock(self.dir):  # does not raise: o dono sumiu faz tempo
             pass
 
-    def test_lock_e_removido_mesmo_se_der_erro_dentro(self):
+    def test_the_lock_is_removed_even_on_error(self):
         with self.assertRaises(ValueError):
             with Lock(self.dir):
-                raise ValueError("falha no meio da rodada")
+                raise ValueError("failure mid-run")
         self.assertFalse((self.dir / ".lock").exists())
 
 

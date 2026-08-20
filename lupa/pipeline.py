@@ -1,98 +1,102 @@
-"""Orquestração dos verbos. Sem rede aqui: fonte e modelo entram injetados.
+"""Verb orchestration. No network here: source and model are injected.
 
-É esta separação que torna o ciclo testável de ponta a ponta sem credencial —
-e é ela que garante que o incremental seja verificável, não prometido.
+That separation is what makes the whole cycle testable without credentials — and
+what makes the incremental behavior verifiable rather than merely promised.
 """
 import json
 from pathlib import Path
 
-from lupa.build import escrever_indice, fazer_backup
-from lupa.caption import estimar_custo, mesclar
+from lupa.build import backup, write_index
+from lupa.caption import estimate_cost, merge
 from lupa.classify import classify
-from lupa.guards import Lock, checar_antes_de_indexar
+from lupa.guards import Lock, check_before_indexing
 from lupa.reconcile import reconcile
 
 
-def _carregar_manifesto(index_dir):
-    caminho = Path(index_dir) / "MANIFEST.json"
+def _load_manifest(index_dir):
+    path = Path(index_dir) / "MANIFEST.json"
     try:
-        return json.loads(caminho.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"itens": {}}
+        return {"items": {}}
 
 
-def _carregar_catalogo(index_dir):
-    """Descrições já pagas. Elas sobrevivem às rodadas seguintes."""
-    caminho = Path(index_dir) / "catalog.jsonl"
-    if not caminho.exists():
+def _load_catalog(index_dir):
+    """Descriptions already paid for. They survive later runs."""
+    path = Path(index_dir) / "catalog.jsonl"
+    if not path.exists():
         return {}
-    guardados = {}
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
-        linha = linha.strip()
-        if linha:
+    stored = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
             try:
-                item = json.loads(linha)
-                guardados[item["id"]] = item
+                item = json.loads(line)
+                stored[item["id"]] = item
             except (json.JSONDecodeError, KeyError):
                 continue
-    return guardados
+    return stored
 
 
-def rodar(acervo, index_dir, fonte, descrever, modo="update", agora="",
-          dry_run=False, rebuild=False, confirm=None, batch=True):
-    """Executa uma rodada completa.
+def run(collection, index_dir, source, describe, mode="update", now="",
+        dry_run=False, rebuild=False, confirm=None, batch=True,
+        model="gemini-2.5-flash-lite"):
+    """Executes one full run.
 
-    fonte     — objeto com .listar() e .baixar(file_id) -> (bytes, mime)
-    descrever — callable(item, bytes, mime) -> dicionário do modelo de visão
-    modo      — "index" (primeira vez) ou "update" (incremental)
+    source   — object exposing .list() and .fetch(file_id) -> (bytes, mime)
+    describe — callable(item, bytes, mime) -> dict from the vision model
+    mode     — "index" (first time) or "update" (incremental)
     """
     index_dir = Path(index_dir)
 
-    if modo == "index":
-        checar_antes_de_indexar(index_dir, acervo=acervo, rebuild=rebuild, confirm=confirm)
+    if mode == "index":
+        check_before_indexing(index_dir, collection=collection,
+                              rebuild=rebuild, confirm=confirm)
 
-    remoto = fonte.listar()
-    manifesto = _carregar_manifesto(index_dir)
-    plano = reconcile(remoto, manifesto)
-    custo = estimar_custo(len(plano.a_descrever), batch=batch)
+    remote = source.list()
+    manifest = _load_manifest(index_dir)
+    plan = reconcile(remote, manifest)
+    cost = estimate_cost(len(plan.to_describe), batch=batch)
 
     if dry_run:
-        return {"plano": plano, "custo_estimado": custo, "falhas": [], "escrito": False}
+        return {"plan": plan, "estimated_cost": cost, "failures": [], "written": False}
 
     if rebuild:
-        fazer_backup(index_dir, agora=agora)
+        backup(index_dir, now=now)
 
     index_dir.mkdir(parents=True, exist_ok=True)
     with Lock(index_dir):
-        guardados = _carregar_catalogo(index_dir)
-        por_id = {f["id"]: f for f in remoto}
-        a_descrever = set(plano.a_descrever)
-        itens, falhas = [], []
+        stored = _load_catalog(index_dir)
+        by_id = {entry["id"]: entry for entry in remote}
+        pending = set(plan.to_describe)
+        items, failures = [], []
 
-        for fid in plano.novas + plano.alteradas + plano.intactas:
-            bruto = por_id[fid]
+        for file_id in plan.added + plan.changed + plan.unchanged:
+            raw = by_id[file_id]
 
-            if fid not in a_descrever:      # intacta: reaproveita o que já foi pago
-                itens.append(guardados[fid])
+            if file_id not in pending:      # unchanged: reuse what was already paid for
+                items.append(stored[file_id])
                 continue
 
-            meta = {**bruto, **classify(bruto)}
+            meta = {**raw, **classify(raw)}
             try:
-                imagem, mime = fonte.baixar(fid)
-                resposta = descrever(bruto, imagem, mime)
-            except Exception as erro:       # uma imagem ruim não derruba a rodada
-                falhas.append({"id": fid, "file": bruto.get("file"), "erro": str(erro)})
+                image, mime = source.fetch(file_id)
+                response = describe(raw, image, mime)
+            except Exception as error:      # one bad image must not sink the run
+                failures.append({"id": file_id, "file": raw.get("file"),
+                                 "error": str(error)})
                 continue
-            itens.append(mesclar(meta, resposta))
+            items.append(merge(meta, response))
 
-        manifesto_novo = escrever_indice(
-            index_dir, acervo=acervo, itens=itens, resumo=plano.resumo(),
-            modelo="gemini-2.5-flash-lite", custo_usd=custo, agora=agora)
+        new_manifest = write_index(
+            index_dir, collection=collection, items=items, summary=plan.summary(),
+            model=model, cost_usd=cost, now=now)
 
-        if falhas:
-            (index_dir / "runs" / f"{str(agora).replace(':', '-')}.errors.jsonl").write_text(
-                "\n".join(json.dumps(f, ensure_ascii=False) for f in falhas) + "\n",
+        if failures:
+            report = index_dir / "runs" / f"{str(now).replace(':', '-')}.errors.jsonl"
+            report.write_text(
+                "\n".join(json.dumps(f, ensure_ascii=False) for f in failures) + "\n",
                 encoding="utf-8")
 
-    return {"plano": plano, "custo_estimado": custo, "falhas": falhas,
-            "escrito": True, "manifesto": manifesto_novo, "total": len(itens)}
+    return {"plan": plan, "estimated_cost": cost, "failures": failures,
+            "written": True, "manifest": new_manifest, "total": len(items)}

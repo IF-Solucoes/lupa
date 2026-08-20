@@ -1,90 +1,90 @@
-"""Busca no catálogo: sem embeddings, sem rede, sobre o índice já escrito."""
+"""Catalog search: no embeddings, no network, over the index already written."""
 import unittest
 from lupa.search import search
 
-CATALOGO = [
-    {"id": "1", "file": "ponte.png", "kind": "peca", "medium": "digital",
-     "orientation": "retrato", "has_text": True,
-     "caption": "Ponte estaiada à noite com luz azul fria",
-     "tags": ["ponte", "noturno", "azul"], "text": "MIGRAÇÃO evoluir por módulos",
+CATALOG = [
+    {"id": "1", "file": "ponte.png", "kind": "design", "medium": "digital",
+     "orientation": "portrait", "has_text": True,
+     "caption": "Cable-stayed bridge at night under cold blue light",
+     "tags": ["bridge", "night", "blue"], "text": "MIGRATION evolve module by module",
      "labels": ["Bridge"]},
-    {"id": "2", "file": "mesa.jpg", "kind": "foto", "medium": "na",
-     "orientation": "paisagem", "has_text": False,
-     "caption": "Mesa de madeira rústica com pão artesanal e luz natural quente",
-     "tags": ["comida", "pao", "madeira", "luz-natural"], "text": "", "labels": ["Food"]},
-    {"id": "3", "file": "banner.jpg", "kind": "peca", "medium": "fisico",
-     "orientation": "paisagem", "has_text": True,
-     "caption": "Banner impresso em pé de evento, fundo azul",
-     "tags": ["banner", "evento", "azul"], "text": "MINDTEC", "labels": []},
+    {"id": "2", "file": "mesa.jpg", "kind": "photo", "medium": "na",
+     "orientation": "landscape", "has_text": False,
+     "caption": "Rustic wooden table with artisan bread in a warm café",
+     "tags": ["food", "bread", "wood", "natural-light"], "text": "", "labels": ["Food"]},
+    {"id": "3", "file": "banner.jpg", "kind": "design", "medium": "physical",
+     "orientation": "landscape", "has_text": True,
+     "caption": "Printed standing banner at an event, blue background",
+     "tags": ["banner", "event", "blue"], "text": "MINDTEC", "labels": []},
 ]
 
 
-class TestCasamento(unittest.TestCase):
-    def test_termo_em_tag_encontra(self):
-        self.assertEqual([r["id"] for r in search(CATALOGO, "ponte")], ["1"])
+class TestMatching(unittest.TestCase):
+    def test_a_term_in_a_tag_matches(self):
+        self.assertEqual([r["id"] for r in search(CATALOG, "bridge")], ["1"])
 
-    def test_termo_em_caption_encontra(self):
-        self.assertIn("2", [r["id"] for r in search(CATALOGO, "artesanal")])
+    def test_a_term_in_the_caption_matches(self):
+        self.assertIn("2", [r["id"] for r in search(CATALOG, "artisan")])
 
-    def test_termo_no_ocr_encontra(self):
-        self.assertIn("1", [r["id"] for r in search(CATALOGO, "módulos")])
+    def test_a_term_in_the_ocr_matches(self):
+        self.assertIn("1", [r["id"] for r in search(CATALOG, "module")])
 
-    def test_termo_inexistente_devolve_vazio(self):
-        self.assertEqual(search(CATALOGO, "helicóptero"), [])
+    def test_an_absent_term_returns_nothing(self):
+        self.assertEqual(search(CATALOG, "helicopter"), [])
 
-    def test_acento_na_consulta_nao_atrapalha(self):
-        self.assertIn("1", [r["id"] for r in search(CATALOGO, "noite")])
-        self.assertIn("1", [r["id"] for r in search(CATALOGO, "NOITE")])
+    def test_case_does_not_matter(self):
+        self.assertIn("1", [r["id"] for r in search(CATALOG, "night")])
+        self.assertIn("1", [r["id"] for r in search(CATALOG, "NIGHT")])
 
-    def test_consulta_sem_acento_acha_termo_acentuado(self):
-        self.assertIn("2", [r["id"] for r in search(CATALOGO, "pao")])
-        self.assertIn("2", [r["id"] for r in search(CATALOGO, "pão")])
+    def test_an_unaccented_query_finds_an_accented_term(self):
+        self.assertIn("2", [r["id"] for r in search(CATALOG, "cafe")])
+        self.assertIn("2", [r["id"] for r in search(CATALOG, "café")])
 
 
 class TestRanking(unittest.TestCase):
-    def test_tag_pesa_mais_que_ocr(self):
-        r = search(CATALOGO, "azul")
-        self.assertEqual(r[0]["id"], "1")  # tag "azul" + caption; o 3 tem tag também
+    def test_a_tag_weighs_more_than_ocr(self):
+        r = search(CATALOG, "blue")
+        self.assertEqual(r[0]["id"], "1")  # tag "blue" + caption; item 3 has the tag too
         self.assertTrue(r[0]["_score"] >= r[-1]["_score"])
 
-    def test_quem_casa_dois_termos_vem_antes(self):
-        r = search(CATALOGO, "azul banner")
+    def test_matching_two_terms_ranks_first(self):
+        r = search(CATALOG, "blue banner")
         self.assertEqual(r[0]["id"], "3")
 
-    def test_resultado_explica_por_que_casou(self):
-        r = search(CATALOGO, "ponte")
-        self.assertIn("tag", r[0]["_motivo"])
+    def test_the_result_explains_why_it_matched(self):
+        r = search(CATALOG, "bridge")
+        self.assertIn("tag", r[0]["_reason"])
 
 
-class TestFiltros(unittest.TestCase):
-    def test_filtro_de_kind_exclui_pecas(self):
-        r = search(CATALOGO, "luz", filtros={"kind": "foto"})
+class TestFilters(unittest.TestCase):
+    def test_the_kind_filter_excludes_designs(self):
+        r = search(CATALOG, "light", filters={"kind": "photo"})
         self.assertEqual([x["id"] for x in r], ["2"])
 
-    def test_filtro_de_medium_isola_material_fisico(self):
-        r = search(CATALOGO, "azul", filtros={"medium": "fisico"})
+    def test_the_medium_filter_isolates_physical_material(self):
+        r = search(CATALOG, "blue", filters={"medium": "physical"})
         self.assertEqual([x["id"] for x in r], ["3"])
 
-    def test_filtro_has_text_false_tira_pecas_com_texto(self):
-        r = search(CATALOGO, "luz", filtros={"has_text": False})
+    def test_has_text_false_drops_pieces_with_text(self):
+        r = search(CATALOG, "light", filters={"has_text": False})
         self.assertEqual([x["id"] for x in r], ["2"])
 
-    def test_filtro_de_orientacao(self):
-        r = search(CATALOGO, "azul", filtros={"orientation": "retrato"})
+    def test_the_orientation_filter(self):
+        r = search(CATALOG, "blue", filters={"orientation": "portrait"})
         self.assertEqual([x["id"] for x in r], ["1"])
 
-    def test_filtro_sozinho_sem_consulta_lista_tudo_que_bate(self):
-        r = search(CATALOGO, "", filtros={"kind": "peca"})
+    def test_a_filter_alone_lists_everything_that_matches(self):
+        r = search(CATALOG, "", filters={"kind": "design"})
         self.assertEqual(sorted(x["id"] for x in r), ["1", "3"])
 
 
-class TestLimite(unittest.TestCase):
-    def test_limite_corta_o_resultado(self):
-        self.assertEqual(len(search(CATALOGO, "azul luz pao", limite=1)), 1)
+class TestLimit(unittest.TestCase):
+    def test_the_limit_truncates_the_result(self):
+        self.assertEqual(len(search(CATALOG, "blue light bread", limit=1)), 1)
 
-    def test_limite_padrao_e_quinze(self):
-        grande = [dict(CATALOGO[1], id=str(i)) for i in range(50)]
-        self.assertEqual(len(search(grande, "madeira")), 15)
+    def test_the_default_limit_is_fifteen(self):
+        many = [dict(CATALOG[1], id=str(i)) for i in range(50)]
+        self.assertEqual(len(search(many, "wood")), 15)
 
 
 if __name__ == "__main__":

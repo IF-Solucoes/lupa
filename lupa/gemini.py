@@ -1,7 +1,7 @@
-"""Cliente do Gemini via REST. Sem SDK — só urllib, para não pesar o repositório.
+"""Gemini client over REST. No SDK — urllib only, to keep the repository light.
 
-Dois modos: síncrono (imediato) e lote (metade do preço, assíncrono). O lote é
-o padrão porque indexar acervo não tem pressa.
+Two modes: synchronous (immediate) and batch (half price, asynchronous). Batch is
+the default, because indexing a collection is never urgent.
 """
 import base64
 import json
@@ -10,167 +10,168 @@ import urllib.error
 import urllib.request
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
-MODELO_PADRAO = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 
-class ErroGemini(Exception):
+class GeminiError(Exception):
     pass
 
 
-def montar_conteudo(prompt, bytes_imagem, mime):
-    """Corpo de uma requisição de visão."""
+def build_content(prompt, image_bytes, mime):
+    """Body of a single vision request."""
     return {
         "contents": [{"parts": [
             {"text": prompt},
             {"inline_data": {"mime_type": mime,
-                             "data": base64.b64encode(bytes_imagem).decode()}},
+                             "data": base64.b64encode(image_bytes).decode()}},
         ]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
     }
 
 
-def linha_de_lote(chave, prompt, bytes_imagem, mime):
-    """Uma linha do JSONL de entrada do Batch. A chave volta no resultado."""
-    return json.dumps({"key": str(chave), "request": montar_conteudo(prompt, bytes_imagem, mime)},
+def batch_line(key, prompt, image_bytes, mime):
+    """One line of the batch input JSONL. The key comes back in the results."""
+    return json.dumps({"key": str(key), "request": build_content(prompt, image_bytes, mime)},
                       ensure_ascii=False)
 
 
-def _texto_da_resposta(resposta):
-    candidatos = (resposta or {}).get("candidates") or []
-    if not candidatos:
+def _response_text(response):
+    candidates = (response or {}).get("candidates") or []
+    if not candidates:
         return None
-    partes = candidatos[0].get("content", {}).get("parts") or []
-    return partes[0].get("text") if partes else None
+    parts = candidates[0].get("content", {}).get("parts") or []
+    return parts[0].get("text") if parts else None
 
 
-def ler_resultado_de_lote(bruto):
-    """JSONL de saída → {chave: dicionário}. Item que falhou some, sem derrubar o resto."""
-    from lupa.caption import parse_resposta, RespostaInvalida
+def read_batch_results(raw):
+    """Output JSONL → {key: dict}. A failed item drops out without taking the rest."""
+    from lupa.caption import InvalidResponse, parse_response
 
-    saida = {}
-    for linha in str(bruto).splitlines():
-        linha = linha.strip()
-        if not linha:
+    out = {}
+    for line in str(raw).splitlines():
+        line = line.strip()
+        if not line:
             continue
         try:
-            registro = json.loads(linha)
+            record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if registro.get("error"):
+        if record.get("error"):
             continue
-        texto = _texto_da_resposta(registro.get("response"))
-        if not texto:
+        text = _response_text(record.get("response"))
+        if not text:
             continue
         try:
-            saida[registro.get("key")] = parse_resposta(texto)
-        except RespostaInvalida:
+            out[record.get("key")] = parse_response(text)
+        except InvalidResponse:
             continue
-    return saida
+    return out
 
 
-# --- daqui para baixo há rede ---
+# --- network below this line ---
 
-def _post(url, corpo, api_key, tentativas=3):
-    dados = json.dumps(corpo).encode()
-    pedido = urllib.request.Request(
-        url, data=dados,
+def _post(url, body, api_key, attempts=3):
+    payload = json.dumps(body).encode()
+    request = urllib.request.Request(
+        url, data=payload,
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
-    for tentativa in range(tentativas):
+    for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(pedido, timeout=120) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as erro:
-            if erro.code in (429, 500, 502, 503) and tentativa < tentativas - 1:
-                time.sleep(2 ** tentativa)
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if error.code in (429, 500, 502, 503) and attempt < attempts - 1:
+                time.sleep(2 ** attempt)
                 continue
-            raise ErroGemini(f"HTTP {erro.code}: {erro.read()[:300]!r}") from erro
-        except urllib.error.URLError as erro:
-            if tentativa < tentativas - 1:
-                time.sleep(2 ** tentativa)
+            raise GeminiError(f"HTTP {error.code}: {error.read()[:300]!r}") from error
+        except urllib.error.URLError as error:
+            if attempt < attempts - 1:
+                time.sleep(2 ** attempt)
                 continue
-            raise ErroGemini(f"rede indisponível: {erro}") from erro
+            raise GeminiError(f"network unavailable: {error}") from error
 
 
-def descrever(api_key, prompt, bytes_imagem, mime, modelo=MODELO_PADRAO):
-    """Descreve UMA imagem, agora. Usado no modo síncrono e nos reprocessamentos."""
-    from lupa.caption import parse_resposta
-
-    url = f"{BASE}/models/{modelo}:generateContent"
-    resposta = _post(url, montar_conteudo(prompt, bytes_imagem, mime), api_key)
-    texto = _texto_da_resposta(resposta)
-    if not texto:
-        raise ErroGemini("resposta sem conteúdo")
-    return parse_resposta(texto)
+def _get(url, api_key):
+    request = urllib.request.Request(url, headers={"x-goog-api-key": api_key})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
 
 
-# --- modo lote: metade do preço, assíncrono ---
+def describe(api_key, prompt, image_bytes, mime, model=DEFAULT_MODEL):
+    """Describes ONE image, now. Used by the synchronous mode and by retries."""
+    from lupa.caption import parse_response
 
-ESTADOS_FINAIS = ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
-                  "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED")
+    url = f"{BASE}/models/{model}:generateContent"
+    response = _post(url, build_content(prompt, image_bytes, mime), api_key)
+    text = _response_text(response)
+    if not text:
+        raise GeminiError("response had no content")
+    return parse_response(text)
 
 
-def _enviar_arquivo(api_key, conteudo, nome_exibicao):
-    """Sobe o JSONL de entrada pela File API (protocolo resumable, duas etapas)."""
-    dados = conteudo.encode()
-    inicio = urllib.request.Request(
+# --- batch mode: half price, asynchronous ---
+
+TERMINAL_STATES = ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
+                   "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED")
+
+
+def _upload_file(api_key, content, display_name):
+    """Uploads the input JSONL through the File API (resumable protocol, two steps)."""
+    payload = content.encode()
+    start = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/upload/v1beta/files",
-        data=json.dumps({"file": {"display_name": nome_exibicao}}).encode(),
+        data=json.dumps({"file": {"display_name": display_name}}).encode(),
         headers={
             "x-goog-api-key": api_key,
             "Content-Type": "application/json",
             "X-Goog-Upload-Protocol": "resumable",
             "X-Goog-Upload-Command": "start",
-            "X-Goog-Upload-Header-Content-Length": str(len(dados)),
+            "X-Goog-Upload-Header-Content-Length": str(len(payload)),
             "X-Goog-Upload-Header-Content-Type": "application/jsonl",
         })
-    with urllib.request.urlopen(inicio, timeout=60) as r:
-        url_upload = r.headers.get("X-Goog-Upload-URL")
-    if not url_upload:
-        raise ErroGemini("a File API não devolveu a URL de upload")
+    with urllib.request.urlopen(start, timeout=60) as response:
+        upload_url = response.headers.get("X-Goog-Upload-URL")
+    if not upload_url:
+        raise GeminiError("the File API did not return an upload URL")
 
-    envio = urllib.request.Request(
-        url_upload, data=dados,
+    finish = urllib.request.Request(
+        upload_url, data=payload,
         headers={"X-Goog-Upload-Command": "upload, finalize",
                  "X-Goog-Upload-Offset": "0",
-                 "Content-Length": str(len(dados))})
-    with urllib.request.urlopen(envio, timeout=300) as r:
-        return json.loads(r.read())["file"]["name"]
+                 "Content-Length": str(len(payload))})
+    with urllib.request.urlopen(finish, timeout=300) as response:
+        return json.loads(response.read())["file"]["name"]
 
 
-def criar_lote(api_key, linhas_jsonl, modelo=MODELO_PADRAO, nome="lupa-batch"):
-    """Sobe as requisições e cria o job. Devolve o nome do lote para acompanhar."""
-    arquivo = _enviar_arquivo(api_key, "\n".join(linhas_jsonl) + "\n", nome)
-    corpo = {"batch": {"display_name": nome, "input_config": {"file_name": arquivo}}}
-    resposta = _post(f"{BASE}/models/{modelo}:batchGenerateContent", corpo, api_key)
-    return resposta.get("name") or resposta.get("metadata", {}).get("name")
+def create_batch(api_key, jsonl_lines, model=DEFAULT_MODEL, name="lupa-batch"):
+    """Uploads the requests and creates the job. Returns the batch name to poll."""
+    uploaded = _upload_file(api_key, "\n".join(jsonl_lines) + "\n", name)
+    body = {"batch": {"display_name": name, "input_config": {"file_name": uploaded}}}
+    response = _post(f"{BASE}/models/{model}:batchGenerateContent", body, api_key)
+    return response.get("name") or response.get("metadata", {}).get("name")
 
 
-def _get(url, api_key):
-    pedido = urllib.request.Request(url, headers={"x-goog-api-key": api_key})
-    with urllib.request.urlopen(pedido, timeout=120) as r:
-        return r.read()
+def await_batch(api_key, batch_name, interval=20, timeout_s=3 * 3600, on_update=None):
+    """Waits for the batch to finish. Returns the raw results JSONL."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        job = json.loads(_get(f"{BASE}/{batch_name}", api_key))
+        state = (job.get("metadata") or {}).get("state") or job.get("state")
+        if on_update:
+            on_update(state)
 
+        if state == "JOB_STATE_SUCCEEDED":
+            results = ((job.get("response") or {}).get("responsesFile")
+                       or (job.get("metadata") or {}).get(
+                           "output_config", {}).get("responses_file"))
+            if not results:
+                raise GeminiError("batch finished without a results file")
+            raw = _get(f"https://generativelanguage.googleapis.com/download/v1beta/"
+                       f"{results}:download?alt=media", api_key)
+            return raw.decode("utf-8", errors="replace")
 
-def acompanhar_lote(api_key, nome_lote, intervalo=20, timeout_s=3 * 3600, ao_atualizar=None):
-    """Aguarda o lote terminar. Devolve o JSONL de resultados, cru."""
-    limite = time.time() + timeout_s
-    while time.time() < limite:
-        estado = json.loads(_get(f"{BASE}/{nome_lote}", api_key))
-        situacao = (estado.get("metadata") or {}).get("state") or estado.get("state")
-        if ao_atualizar:
-            ao_atualizar(situacao)
+        if state in TERMINAL_STATES:
+            raise GeminiError(f"batch ended in {state}")
 
-        if situacao == "JOB_STATE_SUCCEEDED":
-            saida = ((estado.get("response") or {}).get("responsesFile")
-                     or (estado.get("metadata") or {}).get("output_config", {}).get("responses_file"))
-            if not saida:
-                raise ErroGemini("lote concluído sem arquivo de resultados")
-            bruto = _get(f"https://generativelanguage.googleapis.com/download/v1beta/"
-                         f"{saida}:download?alt=media", api_key)
-            return bruto.decode("utf-8", errors="replace")
-
-        if situacao in ESTADOS_FINAIS:
-            raise ErroGemini(f"lote terminou em {situacao}")
-
-        time.sleep(intervalo)
-    raise ErroGemini(f"lote não terminou em {timeout_s}s")
+        time.sleep(interval)
+    raise GeminiError(f"batch did not finish within {timeout_s}s")

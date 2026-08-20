@@ -1,107 +1,129 @@
-"""Leitura da configuração: segredos em ~/.francis/secrets, acervos em ~/.francis/config."""
+"""Configuration. Secrets and collection registry live outside any repository.
+
+Paths default to a portable location and can be pointed anywhere with environment
+variables — nobody has to edit a config file by hand.
+"""
 import json
 import os
 from pathlib import Path
 
-ENV_PADRAO = "~/.francis/secrets/lupa/lupa.env"
-CONFIG_PADRAO = "~/.francis/config/lupa.json"
+DEFAULT_ENV = "~/.lupa/lupa.env"
+DEFAULT_CONFIG = "~/.lupa/collections.json"
+DEFAULT_INDEX_ROOT = "~/.lupa/indexes"
+
+SETTINGS = ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG", "LUPA_STATE_DIR",
+            "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN",
+            "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES")
 
 
-def ler_env(caminho=ENV_PADRAO):
-    """Parser de .env — sem dependência externa para uma tarefa de dez linhas."""
-    arquivo = Path(str(caminho)).expanduser()
-    if not arquivo.exists():
+def env_path():
+    """Where lupa.env lives. LUPA_ENV overrides the default."""
+    return Path(os.environ.get("LUPA_ENV") or DEFAULT_ENV).expanduser()
+
+
+def config_path(file_env=None):
+    """Where the collection registry lives.
+
+    Order: process environment > the env file > portable default. The env file has
+    to be able to redirect this, so that one settings file can move every path.
+    """
+    chosen = (os.environ.get("LUPA_CONFIG")
+              or (file_env or {}).get("LUPA_CONFIG")
+              or DEFAULT_CONFIG)
+    return Path(chosen).expanduser()
+
+
+def read_env(path=None):
+    """A .env parser — no dependency for a ten-line job."""
+    source = Path(str(path)).expanduser() if path else env_path()
+    if not source.exists():
         return {}
 
-    valores = {}
-    for linha in arquivo.read_text(encoding="utf-8").splitlines():
-        linha = linha.strip()
-        if not linha or linha.startswith("#") or "=" not in linha:
+    values = {}
+    for line in source.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        chave, _, valor = linha.partition("=")
-        valor = valor.strip().strip('"').strip("'")
-        if valor.startswith("~"):
-            valor = str(Path(valor).expanduser())
-        valores[chave.strip()] = valor
-    return valores
+        key, _, value = line.partition("=")
+        value = value.strip().strip('"').strip("'")
+        if value.startswith("~"):
+            value = str(Path(value).expanduser())
+        values[key.strip()] = value
+    return values
 
 
-def ler_config(caminho=CONFIG_PADRAO):
-    arquivo = Path(str(caminho)).expanduser()
+def environment(path=None):
+    """Values from the file, with the process environment layered on top."""
+    values = read_env(path)
+    for key in SETTINGS:
+        if os.environ.get(key):
+            values[key] = os.environ[key]
+    return values
+
+
+def read_config(path=None, file_env=None):
+    source = Path(str(path)).expanduser() if path else config_path(file_env)
     try:
-        return json.loads(arquivo.read_text(encoding="utf-8"))
+        return json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"acervos": []}
+        return {"collections": []}
 
 
-def achar_acervo(config, nome):
-    for acervo in (config or {}).get("acervos") or []:
-        if acervo.get("nome") == nome:
-            return acervo
+def write_config(config, path=None, file_env=None):
+    destination = Path(str(path)).expanduser() if path else config_path(file_env)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(config, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+
+
+def find_collection(config, name):
+    for collection in (config or {}).get("collections") or []:
+        if collection.get("name") == name:
+            return collection
     return None
 
 
-def ambiente(env_path=ENV_PADRAO):
-    """Env do arquivo, com o ambiente do processo por cima (útil em CI)."""
-    valores = ler_env(env_path)
-    for chave in ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_STATE_DIR",
-                  "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN"):
-        if os.environ.get(chave):
-            valores[chave] = os.environ[chave]
-    return valores
+def register_collection(config, target):
+    """Stores the collection so that next time the short name is enough.
 
-
-RAIZ_INDICES_PADRAO = "~/.lupa/indices"
-
-
-def resolver_raiz_indices(processo_env, arquivo_env):
-    """Onde vive o espelho local dos índices, que é o que o MCP lê.
-
-    O índice canônico fica no Drive. Este é o espelho de trabalho.
-    Ordem: variável explícita > LUPA_STATE_DIR do .env > padrão portátil.
-    """
-    if processo_env.get("LUPA_INDICES"):
-        return Path(processo_env["LUPA_INDICES"]).expanduser()
-    if arquivo_env.get("LUPA_STATE_DIR"):
-        return Path(arquivo_env["LUPA_STATE_DIR"]).expanduser() / "indices"
-    return Path(RAIZ_INDICES_PADRAO).expanduser()
-
-
-def registrar_acervo(config, alvo):
-    """Guarda o acervo para que da próxima vez baste o apelido.
-
-    O usuário nunca precisa editar o arquivo à mão: quem cadastra é a primeira
-    execução bem-sucedida.
+    Nobody edits the file by hand: the first successful run registers it.
     """
     config = dict(config or {})
-    acervos = [dict(a) for a in config.get("acervos") or []]
+    collections = [dict(entry) for entry in config.get("collections") or []]
 
-    registro = {"nome": alvo.nome}
-    if alvo.tipo == "drive":
-        registro["folder_id"] = alvo.folder_id
+    entry = {"name": target.name}
+    if target.kind == "drive":
+        entry["folder_id"] = target.folder_id
     else:
-        registro["caminho"] = str(alvo.caminho)
+        entry["path"] = str(target.path)
 
-    for i, existente in enumerate(acervos):
-        if existente.get("nome") == alvo.nome:
-            acervos[i] = {**existente, **registro}
+    for index, existing in enumerate(collections):
+        if existing.get("name") == target.name:
+            collections[index] = {**existing, **entry}
             break
     else:
-        acervos.append(registro)
+        collections.append(entry)
 
-    config["acervos"] = acervos
+    config["collections"] = collections
     return config
 
 
-def alvo_de_cadastro(registro):
-    """Converte uma entrada do config de volta num Alvo."""
-    from lupa.alvo import Alvo
-    if registro.get("folder_id"):
-        return Alvo("drive", registro["nome"], folder_id=registro["folder_id"])
-    return Alvo("local", registro["nome"], caminho=Path(registro["caminho"]).expanduser())
+def target_from_registry(entry):
+    """Turns a registry entry back into a Target."""
+    from lupa.target import Target
+    if entry.get("folder_id"):
+        return Target("drive", entry["name"], folder_id=entry["folder_id"])
+    return Target("local", entry["name"], path=Path(entry["path"]).expanduser())
 
 
-def gravar_config(config, caminho=CONFIG_PADRAO):
-    arquivo = Path(str(caminho)).expanduser()
-    arquivo.parent.mkdir(parents=True, exist_ok=True)
-    arquivo.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+def resolve_index_root(process_env, file_env):
+    """Where the local mirror of the indexes lives — what the MCP reads.
+
+    The canonical index lives with the collection. This is the working mirror.
+    Order: explicit variable > LUPA_STATE_DIR from the env file > portable default.
+    """
+    if process_env.get("LUPA_INDEXES"):
+        return Path(process_env["LUPA_INDEXES"]).expanduser()
+    if file_env.get("LUPA_STATE_DIR"):
+        return Path(file_env["LUPA_STATE_DIR"]).expanduser() / "indexes"
+    return Path(DEFAULT_INDEX_ROOT).expanduser()

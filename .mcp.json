@@ -2,9 +2,11 @@
   "mcpServers": {
     "lupa": {
       "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/lupa_mcp.py"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/lupa_mcp.py"
+      ],
       "env": {
-        "LUPA_INDICES": "${LUPA_INDICES}"
+        "LUPA_INDEXES": "${LUPA_INDEXES}"
       }
     }
   }

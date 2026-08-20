@@ -1,310 +1,231 @@
-# lupa — índice de acervo visual para agentes
+# lupa — a visual collection index for agents
 
-**Data:** 2026-08-20 · **Status:** design aprovado, aguardando implementação
-**Módulo:** `lupa` (repositório público próprio, plugin instalável)
+**Status:** implemented · **Schema:** v1
 
 ---
 
-## 1. Problema
+## 1. The problem
 
-Um acervo de imagens no Google Drive é opaco para um agente. Para achar uma
-referência, a IA precisa olhar as imagens — e olhar imagem custa caro. Com
-centenas de arquivos, o custo inviabiliza o uso: foi exatamente o que aconteceu
-ao tentar fazer curadoria de acervo dentro do Claude Cowork.
+An image collection is opaque to an agent. To find one reference it has to look at
+the images, and looking at images is expensive. With hundreds of files the cost
+makes the whole approach unusable.
 
-O acervo também é heterogêneo. Foto crua, post finalizado, mockup impresso e
-screenshot convivem na mesma pasta. Sem separá-los, toda busca devolve lixo.
+Collections are also heterogeneous. Raw photographs, finished posts, printed
+mockups, and screenshots all live in the same folder. Without separating them, every
+search returns noise.
 
-## 2. Objetivo
+## 2. Goal
 
-Um índice textual do acervo que qualquer agente leia barato, e que se mantenha
-atualizado sem ser refeito.
+A text index of the collection that any agent can read cheaply, and that stays
+current without being rebuilt.
 
-Três verbos, e nada além disso:
-
-| Verbo | Faz | Custo |
+| Verb | Does | Cost |
 |---|---|---|
-| `index` / `update` | são o mesmo comando: o lupa lê o índice e decide se é a primeira passada ou uma reconciliação | 1× por imagem, depois só o delta |
-| `search` | consulta e devolve ≤15 candidatos com URL e motivo | zero |
+| `index` / `update` | the same command: lupa reads the index and decides whether this is a first pass or a reconciliation | once per image, then only the delta |
+| `search` | queries and returns ≤15 candidates with URL and reason | zero |
 
-O usuário nunca escolhe entre `index` e `update` — essa decisão é do programa.
+The user never chooses between `index` and `update` — the program decides.
 
-## 3. Não-objetivos (a fronteira)
+## 3. Non-goals (the boundary)
 
-O lupa é infraestrutura sem opinião. Ele **não** sabe o que é cliente, marca,
-identidade visual ou linha editorial. Quem julga adequação é a skill consumidora
-— no caso do dono, uma skill editorial que já existe no Cowork.
+lupa is infrastructure without opinion. It does **not** know what a client, a brand,
+a visual identity, or an editorial line is. Judging fitness belongs to the consuming
+skill.
 
-Fora de escopo, deliberadamente:
+Deliberately out of scope:
 
-- Julgar se uma imagem é boa, bonita ou adequada a uma marca.
-- Vocabulário controlado global de tags.
-- Embeddings e busca vetorial (CLIP). O índice textual resolve o caso de uso.
-- Editar os arquivos do acervo. O lupa só cria os arquivos do próprio `_lupa/`.
+- Judging whether an image is good, beautiful, or on-brand.
+- A global controlled tag vocabulary.
+- Embeddings and vector search. The text index covers the use case.
+- Editing the collection's files. lupa only creates the files under `_lupa/`.
 
-> **Revisão de 2026-08-20:** pasta local voltou ao escopo, a pedido do dono. Ver
-> a seção 5.5.
+## 4. Findings that shaped the design
 
-## 4. Achados que fundamentam o design
+Four verified facts, each with a direct consequence:
 
-Quatro fatos verificados durante o desenho, cada um com consequência direta:
+1. **Drive already returns OCR and labels, for free.** The connector exposes, in
+   `contentSnippet`, the text extracted from the image plus an `Image labels` list.
+   The OCR is excellent. The labels are generic noise — on a post about
+   prioritization, Google suggested "Heineken" and "Beryllium".
+   → *Consequence:* the vision model never pays for OCR or object detection. It
+   fills only the gap: composition, palette, light, style.
 
-1. **O Drive já entrega OCR e labels, de graça.** O conector devolve, em
-   `contentSnippet`, o texto extraído da imagem e uma lista `Image labels`.
-   O OCR é excelente. Os labels são ruído genérico — num post sobre priorização,
-   o Google sugeriu "Heineken" e "Beryllium".
-   → *Consequência:* o VLM nunca paga por OCR nem por detecção de objeto. Ele
-   preenche só o buraco: composição, paleta, luz, estilo.
+2. **The Drive connector cannot edit existing files.** It can only create new files
+   in a chosen folder.
+   → *Consequence:* the index is a **file**, never metadata on the indexed files.
+   This also makes both faces identical.
 
-2. **O conector do Drive não edita arquivos existentes.** Ele apenas cria
-   arquivos novos numa pasta escolhida.
-   → *Consequência:* o índice é **arquivo**, nunca metadado dos arquivos
-   indexados. Isso também iguala as duas faces.
+3. **Claude Code plugins carry MCP servers natively**, through a `.mcp.json` at the
+   plugin root using `${CLAUDE_PLUGIN_ROOT}`. The client starts and stops the stdio
+   server itself, on any operating system.
+   → *Consequence:* the MCP travels inside the repository. Nobody needs a specific
+   shell, a port, a daemon, or a manual install.
 
-3. **Plugins do Claude Code carregam MCP nativamente**, via `.mcp.json` na raiz
-   do plugin com `${CLAUDE_PLUGIN_ROOT}`. O cliente sobe e derruba o servidor
-   stdio sozinho, em qualquer sistema operacional.
-   → *Consequência:* o MCP viaja dentro do repositório. Ninguém precisa de WSL,
-   porta, daemon ou instalação manual.
+4. **Gemini 2.5 Flash-Lite describes well and judges poorly.** It is built for
+   classification and extraction at volume, not for aesthetic judgment.
+   → *Consequence:* two passes. The wide one (Flash-Lite, cents) covers the whole
+   collection. The narrow one (the agent's own model) looks only at the 8–15
+   finalists the search returned.
 
-4. **Gemini 2.5 Flash-Lite descreve bem e julga mal.** Ele é feito para
-   classificação e extração em volume, não para julgamento estético.
-   → *Consequência:* duas passadas. A larga (Flash-Lite, centavos) cobre o
-   acervo inteiro. A fina (o modelo da sessão do agente) olha só os 8–15
-   finalistas que a busca trouxe.
+## 5. Architecture
 
-## 5. Arquitetura
+### 5.1 Two faces, one contract
 
-### 5.1 Duas faces, um contrato
+- **Claude Code face** — a plugin with an embedded MCP server. Runs all verbs and
+  does the heavy work: fetching thumbnails, calling Gemini, writing the index.
+- **Cowork / claude.ai face** — a `SKILL.md` that teaches an agent to **read** the
+  index through the Drive connector. It executes no code.
 
-- **Face Claude Code** — plugin com MCP embutido. Executa os três verbos.
-  Faz o trabalho pesado: baixa miniaturas, chama o Gemini, escreve o índice.
-- **Face Cowork / claude.ai** — `SKILL.md` que ensina a **ler** o índice pelo
-  conector do Drive. Não executa código. É a face que a skill editorial consome.
+The contract between them is the files under `_lupa/`. Neither face knows the other.
 
-O contrato entre elas são os arquivos do `_lupa/`. Nenhuma das faces conhece a
-outra.
-
-### 5.2 Layout do índice
-
-Dentro da própria pasta do acervo, no Drive:
+### 5.2 Index layout
 
 ```
-<acervo>/_lupa/
-├── INDEX.md            # porta de entrada: contagens, vocabulário, como consultar
-├── catalog.jsonl       # 1 linha por imagem — leitura de máquina
-├── by-tag/<tag>.md     # índice invertido — leitura barata sem código
-├── contact-sheets/     # grades visuais para curadoria humana
-├── MANIFEST.json       # hashes e estado; é o que torna o update incremental
-├── runs/<data>.md      # relatório de cada rodada
-└── .backup/<ts>/       # índice anterior, antes de qualquer rebuild
+<collection>/_lupa/
+├── INDEX.md            # entry point: counts, vocabulary, how to query
+├── catalog.jsonl       # one line per image — machine reading
+├── by-tag/<tag>.md     # inverted index — cheap reading without code
+├── contact-sheets/     # visual grids for human curation
+├── MANIFEST.json       # hashes and state; what makes updates incremental
+├── runs/<date>.md      # report for each run
+└── .backup/<ts>/       # the previous index, kept before any rebuild
 ```
 
-Três níveis de leitura, do barato ao caro: `INDEX.md` (~2 KB, sempre) →
-`by-tag/` (só as tags relevantes) → `catalog.jsonl` (só quando precisa cruzar).
+Three reading levels, cheapest first: `INDEX.md` (~2 KB, always) → `by-tag/` (only
+the relevant tags) → `catalog.jsonl` (only when fields must be crossed).
 
-O `INDEX.md` abre declarando a regra que sustenta a economia: **o agente lê
-texto, nunca pixels.** Se quiser ver, vê os finalistas.
+`INDEX.md` opens by stating the rule that sustains the economics: **read text, never
+pixels**. If you must look, look at the finalists.
 
-### 5.3 Schema da linha do catálogo (v1)
+### 5.3 Catalog line schema (v1)
 
-```json
-{
-  "id": "1a2B…",                    "file": "post-24-migracao.png",
-  "url": "https://drive.google.com/…",
-  "w": 1080, "h": 1350, "aspect": "4:5", "orientation": "retrato",
-  "kind": "peca", "medium": "digital", "source": "gerado",
-  "caption": "Ponte estaiada à noite, luz azul fria, silhueta urbana ao fundo",
-  "tags": ["ponte", "noturno", "azul", "urbano"],
-  "scene": "exterior", "people": 0,
-  "palette": ["#0b1b2a", "#2f6f9f"],
-  "has_text": true,
-  "text": "MIGRAÇÃO — Adiar a modernização…",     // OCR, vem do Drive
-  "labels": ["Bridge", "Technology"],             // labels do Drive, cruas
-  "hash": "md5…", "model": "gemini-2.5-flash-lite", "v": 1
-}
-```
+See [`schema/index-v1.json`](../schema/index-v1.json). Versioned on purpose: a
+consumer that breaks is a consumer that ignored the version field.
 
-O contrato é versionado em `schema/index-v1.json`. Consumidor que quebra é
-consumidor que ignorou a versão.
+### 5.4 Type classification
 
-### 5.4 Classificação de tipo
+A **closed** taxonomy — an open one is precisely the noise we are avoiding:
 
-Taxonomia **fechada** — taxonomia aberta é a própria poluição que queremos evitar:
+- `kind`: `photo` · `design` · `screenshot` · `diagram` · `logo` · `other`
+- `medium`: `physical` · `digital` · `na`
 
-- `kind`: `foto` · `peca` · `captura` · `grafico` · `logo` · `outro`
-- `medium`: `fisico` · `digital` · `na`
+There is no `mockup`. A mockup is `design` + `physical`. The consumer decides
+whether that is past work or raw material for a new render.
 
-Não existe `mockup`. Um mockup é `peca` + `medium: fisico`. A consumidora
-decide se aquilo é entrega passada ou insumo para um render novo.
+Classification starts deterministic; the vision model only breaks ties:
 
-A classificação começa determinística, e o VLM só desempata:
-
-| Sinal | Custo | Decide |
+| Signal | Cost | Decides |
 |---|---|---|
-| EXIF (`Make`/`Model`) | zero | tem câmera → `source: camera`; não tem → `gerado` |
-| Proporção | zero | 4:5, 9:16, 1:1 → peça de social; 3:2, 4:3 grande → foto |
-| Densidade de OCR | zero | muito texto → `peca`/`grafico`; nenhum → `foto` |
-| Formato | zero | PNG grande sem EXIF → export de design |
-| VLM | já pago | `medium` (físico vs digital) e os casos ambíguos |
+| EXIF (`Make`/`Model`) | zero | camera present → `source: camera`; absent → `generated` |
+| Aspect ratio | zero | 4:5, 9:16, 1:1 → social design; large 3:2, 4:3 → photograph |
+| OCR density | zero | lots of text → `design`/`diagram`; none → `photo` |
+| Format | zero | large PNG without EXIF → design export |
+| Vision model | already paid | `medium` (physical vs digital) and the ambiguous cases |
 
-### 5.5 De onde vem o acervo — e por que isso ainda importa
+### 5.5 Where the collection comes from — and why that still matters
 
-O usuário aponta o acervo do jeito que for mais fácil: URL da pasta no Drive, id
-solto, caminho no disco, ou o apelido de um acervo já indexado. O `lupa` resolve
-sozinho; ninguém precisa saber o que é um `folder_id`, e ninguém edita config à mão
-(a primeira rodada bem-sucedida cadastra o acervo).
+The user points at the collection whichever way is easiest: a Drive folder URL, a
+bare id, a local path, or the name of a collection already indexed. lupa resolves it;
+nobody needs to know what a `folder_id` is, and nobody edits a config file by hand
+(the first successful run registers the collection).
 
-A origem, porém, não é indiferente. Pela API do Drive vêm três coisas que o disco
-não dá:
+The origin is not neutral, though. Through the Drive API you get three things the
+disk cannot provide:
 
-| | pasta no disco | API do Drive |
+| | folder on disk | Drive API |
 |---|---|---|
-| descrever, classificar, buscar, incremental | idêntico | idêntico |
-| OCR e labels de graça | não existem | vêm no metadado, custo zero |
-| link do resultado | `file://…`, inútil fora da máquina | `https://…`, abre em qualquer lugar |
-| identidade do arquivo | é o caminho: renomear força reindexar | `id` imutável |
+| describing, classifying, searching, incremental updates | identical | identical |
+| OCR and labels for free | absent | in the metadata, zero cost |
+| link in the result | `file://…`, useless off-machine | `https://…`, opens anywhere |
+| file identity | the path: renaming forces a reindex | immutable `id` |
 
-O caso ambíguo é a pasta do **Google Drive for Desktop montada no disco**. Ela
-parece local e é o Drive. O `lupa` detecta (`lupa/montagem.py`) e o pré-flight
-explica o que se ganha ao fornecer a URL — **sem bloquear**. A escolha é informada,
-não obrigatória.
+The ambiguous case is a **Google Drive for Desktop folder mounted on disk**. It looks
+local and is Drive. lupa detects it (`lupa/mount.py`) and preflight explains what the
+URL would buy — **without blocking**. The choice is informed, not mandatory.
 
-### 5.6 O pré-flight é obrigatório
+### 5.6 Preflight is mandatory
 
-Não é uma flag, é a primeira etapa de toda rodada. Ele:
+It is not a flag; it is the first stage of every run. It:
 
-1. resolve o alvo e descobre o apelido real do acervo (o nome da pasta, não o id);
-2. checa chave do Gemini, credencial do Drive, sessão de login e origem do acervo;
-3. para em qualquer `✗`, **sem gastar nada**, imprimindo o passo a passo da correção;
-4. roda o `--dry-run` e mostra o plano e o custo;
-5. só então pergunta se prossegue.
+1. resolves the target and discovers the collection's real name (the folder name,
+   not the id);
+2. checks the Gemini key, Drive credentials, sign-in session, and collection source;
+3. stops on any `✗`, **spending nothing**, printing the fix step by step;
+4. runs the dry run and shows the plan and the cost;
+5. only then asks whether to proceed.
 
-A mensagem de erro é a documentação. Quem chama o `lupa` — pessoa ou agente —
-recebe a instrução exata em vez de um traceback.
+The error message is the documentation. Whoever calls lupa — person or agent — gets
+the exact instruction instead of a traceback.
 
-## 6. Atualização incremental
+## 6. Incremental updates
 
-O `MANIFEST.json` guarda `id → hash` de tudo que já foi descrito. Cada `update`
-lista os metadados do Drive (segundos, zero token) e reconcilia por conjuntos:
+`MANIFEST.json` stores `id → hash` for everything already described. Each update
+lists metadata from the source (seconds, zero tokens) and reconciles by sets:
 
-| Situação | Detecção | Ação | Custo |
+| Situation | Detection | Action | Cost |
 |---|---|---|---|
-| nova | `id` no Drive, ausente no manifesto | descreve | paga |
-| alterada | `id` existe, `md5Checksum` mudou | redescreve | paga |
-| sumida / lixeira | `id` no manifesto, ausente na listagem | remove a linha do catálogo | zero |
-| intacta | `id` e hash iguais | pula | **zero** |
+| added | id present remotely, absent from the manifest | describe | pays |
+| changed | id present, checksum differs | describe again | pays |
+| removed / trashed | id in the manifest, absent remotely | drop the catalog line | zero |
+| unchanged | id and hash both match | skip | **zero** |
 
-Rodar `update` duas vezes seguidas sem mudança no acervo não gasta nada.
+Running `update` twice with no change in between costs nothing.
 
-Cada rodada escreve `runs/<data>.md`:
+## 7. Guardrails
 
-```
-# Rodada 2026-08-20 14:32 · acervo "if-editorial"
-Total: 3.412 imagens · indexadas: 3.412 (100%)
-+ 40 novas · ~ 3 atualizadas · - 5 removidas · = 3.364 intactas (custo zero)
-Custo: US$ 0,004 · duração: 1m18s · modelo: gemini-2.5-flash-lite
-Falhas: 2 → runs/2026-08-20.errors.jsonl
-```
+The dangerous verb is a rebuild. Four layers, cheapest first:
 
-## 7. Guarda-corpos
+1. A normal run never overwrites — it reconciles.
+2. Rebuilding requires typing the collection name: `--rebuild --confirm "<name>"`.
+   That passes neither by accident nor by an agent's autocomplete.
+3. Every rebuild copies the previous index to `.backup/<timestamp>/` first. The
+   operation is reversible.
+4. Cost ceiling: above `LUPA_CONFIRM_ABOVE` new images (200 by default), the command
+   shows the plan and waits. `--dry-run` plans without spending.
 
-O verbo perigoso é o `index`. Ele se recusa a agir sobre um acervo já indexado:
+A `.lock` file under `_lupa/` keeps two concurrent runs from scrambling the manifest.
+A lock older than 30 minutes is treated as orphaned and reclaimed.
 
-```
-✋ Este acervo já tem índice.
-   3.412 imagens · última rodada 2026-08-18
+## 8. Portability
 
-   Você provavelmente quer:  lupa update
-   Refazer custaria ~US$ 0,24 e apagaria 6 rodadas de histórico.
-   Se é isso mesmo: lupa index --rebuild --confirm "if-editorial"
-```
+The repository is public and cannot assume its author's environment:
 
-Quatro camadas, da mais barata à mais forte:
+- No platform-specific shell calls and no absolute paths from one machine.
+- The MCP server is stdio and dependency-free — the client starts it. No port, no
+  daemon, no service.
+- The Cowork face executes nothing. Where there is no Python, the index still reads.
+- Every path is configurable by environment variable, with a portable default under
+  `~/.lupa`.
 
-1. `index` detecta `MANIFEST.json` e desvia para `update`. Nunca sobrescreve.
-2. Refazer exige digitar o nome do acervo: `--rebuild --confirm "<nome>"`.
-   Não passa por engano nem por autocomplete de agente.
-3. Todo rebuild copia o índice anterior para `.backup/<timestamp>/` antes de
-   escrever. A operação é reversível.
-4. Teto de custo: acima de `LUPA_CONFIRM_ABOVE` imagens novas (padrão 200), o
-   comando mostra o plano e espera confirmação. `--dry-run` planeja sem gastar.
+## 9. Success criteria
 
-Um `.lock` em `_lupa/` impede que duas execuções simultâneas embaralhem o
-manifesto. Lock velho (>30 min) é considerado órfão e liberado.
+`scripts/postcheck.py` validates the index; the test suite covers the rest.
 
-## 8. Credenciais e configuração
+1. Indexing a fresh collection produces a complete `_lupa/`, valid against the schema.
+2. Rebuilding without confirmation writes nothing and explains why.
+3. An update with no changes makes zero Gemini calls and zero downloads.
+4. An update after adding, replacing and deleting files reflects all three.
+5. `search` answers in under a second over 10,000 lines.
+6. An agent with no code execution can answer "which portrait photos have no text"
+   by reading only `INDEX.md` and one `by-tag/` file.
+7. No file in the collection is ever modified. Only `_lupa/` is written.
 
-Segue o padrão `~/.francis` — segredo fora de qualquer repositório:
+## 10. Known risks
 
-```
-~/.francis/secrets/lupa/     (chmod 700)
-├── README.md                # como obter cada credencial
-├── lupa.env                 # GEMINI_API_KEY + freios (chmod 600)
-├── google-oauth.json        # cliente OAuth baixado do Google Cloud
-└── token.json               # nasce no primeiro login
-~/.francis/config/lupa.json  # não-secreto: acervos (nome → folder_id)
-~/.francis/state/lupa/       # cache local: miniaturas, manifesto espelhado
-```
+Three points that only a real collection can confirm:
 
-Escopos OAuth mínimos: `drive.readonly` para ler o acervo, `drive.file` para
-criar e atualizar **apenas** os arquivos do próprio `_lupa/`.
+1. **Reading the index through the connector.** The Cowork face depends on the Drive
+   connector reading `.md` and `.jsonl` as text. That is the expected behavior, but
+   it deserves verification before the face is promised — it is success criterion 6.
+2. **Searching inside the catalog without code.** Drive's own `search_files` is not
+   reliable for filtering lines of a large `.jsonl`. `by-tag/` exists precisely so
+   that nothing depends on it.
+3. **Gemini batch mode requires a billing-enabled project.** Without it, batch fails
+   and the cost doubles in synchronous mode. The command should detect and warn,
+   rather than fail mid-run.
 
-## 9. Portabilidade
+## 11. Deferred
 
-O repositório é público e não pode assumir o ambiente do autor:
-
-- Nada de `powershell.exe`, `wslpath` ou caminho absoluto de WSL.
-- `uv` como runtime (`uv run --script`, dependências declaradas no próprio
-  arquivo via PEP 723). Funciona em Linux, macOS e Windows sem montar venv.
-- O MCP é stdio, iniciado pelo cliente. Sem porta, sem daemon, sem serviço.
-- A face Cowork não executa nada. Onde não há Python, o índice segue legível.
-
-## 10. Estrutura do repositório
-
-```
-lupa/
-├── plugin.json · .mcp.json         # o MCP viaja com o plugin
-├── skills/
-│   ├── indexar/SKILL.md            # index + update (face Code)
-│   ├── buscar/SKILL.md             # search (face Code)
-│   └── cowork/SKILL.md             # leitura do índice sem código
-├── server/lupa_mcp.py              # MCP stdio: lupa_search, lupa_status
-├── scripts/                        # pull · thumbs · caption · build · postcheck
-├── schema/index-v1.json            # o contrato, versionado
-├── exemplo/_lupa/                  # índice de brinquedo, para ver antes de rodar
-├── docs/ · README.md · LICENSE (MIT)
-```
-
-## 11. Critérios de sucesso
-
-O `postcheck.py` valida, e a entrega só fecha com todos verdes:
-
-1. `index` num acervo novo produz `_lupa/` completo e válido contra o schema.
-2. `index` num acervo já indexado **não escreve nada** e aponta para `update`.
-3. `update` sem mudanças no acervo faz zero chamada ao Gemini.
-4. `update` após adicionar, trocar e apagar arquivos reflete os três casos.
-5. `search` responde em menos de 1 s sobre 10.000 linhas.
-6. Um agente sem executar código responde "quais fotos em retrato, sem texto"
-   lendo apenas `INDEX.md` e um arquivo de `by-tag/`.
-7. Nenhum arquivo do acervo é modificado. Só o `_lupa/` é escrito.
-
-## 12. Riscos conhecidos
-
-Três pontos que só o primeiro acervo real confirma:
-
-1. **Leitura do índice pelo conector.** A face Cowork depende de o conector do
-   Drive ler `.md` e `.jsonl` como texto. É o comportamento esperado, mas vale
-   validar antes de prometer a face — é o critério de sucesso 6.
-2. **Busca dentro do catálogo, sem código.** O `search_files` do Drive não é
-   confiável para filtrar linhas de um `.jsonl` grande. O `by-tag/` existe
-   justamente para não depender disso.
-3. **Batch API do Gemini exige projeto com faturamento ativo.** Sem isso, o
-   `LUPA_BATCH=1` falha e o custo dobra no modo síncrono. O comando deve
-   detectar e avisar, não falhar no meio da rodada.
-
-## 13. Evoluções deixadas para depois
-
-- Busca vetorial (CLIP) para consulta por semelhança visual.
-- `changes.list` do Drive com `startPageToken`, no lugar da listagem completa.
-- Fonte de acervo em pasta local ou S3.
+- Vector search (CLIP) for visual similarity queries.
+- Drive's `changes.list` with `startPageToken`, replacing the full listing.
+- Additional collection sources (S3, other cloud drives).

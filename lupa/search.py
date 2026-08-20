@@ -1,23 +1,23 @@
-"""Busca sobre o catálogo já indexado. Sem rede, sem modelo, sem embeddings.
+"""Search over the written catalog. No network, no model, no embeddings.
 
-A consulta é textual e os filtros são exatos. O resultado vem com `_score` e
-`_motivo` — o consumidor precisa saber POR QUE algo casou para confiar na lista.
+The query is textual and the filters are exact. Results carry `_score` and
+`_reason` — a consumer has to know WHY something matched in order to trust the list.
 """
 import unicodedata
 
-LIMITE_PADRAO = 15
+DEFAULT_LIMIT = 15
 
-# Onde o termo casou importa: uma tag é curadoria, o OCR é acidente.
-PESOS = {"tags": 5, "caption": 3, "file": 2, "labels": 1, "text": 1}
-
-
-def _normalizar(texto):
-    """Caixa baixa e sem acento, dos dois lados da comparação."""
-    sem_acento = unicodedata.normalize("NFKD", str(texto))
-    return "".join(c for c in sem_acento if not unicodedata.combining(c)).lower()
+# Where a term matched matters: a tag is curation, OCR text is incidental.
+WEIGHTS = {"tags": 5, "caption": 3, "file": 2, "labels": 1, "text": 1}
 
 
-def _campos(item):
+def _normalize(text):
+    """Lowercase and accent-free, on both sides of the comparison."""
+    decomposed = unicodedata.normalize("NFKD", str(text))
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+
+
+def _fields(item):
     return {
         "tags": " ".join(item.get("tags") or []),
         "caption": item.get("caption") or "",
@@ -27,45 +27,45 @@ def _campos(item):
     }
 
 
-def _passa_nos_filtros(item, filtros):
-    return all(item.get(chave) == valor for chave, valor in (filtros or {}).items())
+def _passes_filters(item, filters):
+    return all(item.get(key) == value for key, value in (filters or {}).items())
 
 
-def _pontuar(item, termos):
-    """Soma os pesos de cada campo onde algum termo aparece."""
-    campos = {nome: _normalizar(valor) for nome, valor in _campos(item).items()}
-    score, motivos, casados = 0, [], set()
+def _score(item, terms):
+    """Sums the weight of every field where a term appears."""
+    fields = {name: _normalize(value) for name, value in _fields(item).items()}
+    total, reasons, matched = 0, [], set()
 
-    for termo in termos:
-        for nome, conteudo in campos.items():
-            if termo in conteudo:
-                score += PESOS[nome]
-                motivos.append(f"{nome}:{termo}")
-                casados.add(termo)
+    for term in terms:
+        for name, content in fields.items():
+            if term in content:
+                total += WEIGHTS[name]
+                reasons.append(f"{name}:{term}")
+                matched.add(term)
 
-    # Casar mais termos distintos vale mais do que casar um termo em vários campos.
-    score += 10 * len(casados)
-    return score, motivos, casados
+    # Matching more distinct terms beats matching one term in many fields.
+    total += 10 * len(matched)
+    return total, reasons, matched
 
 
-def search(catalogo, consulta, filtros=None, limite=LIMITE_PADRAO):
-    """Devolve até `limite` itens ordenados por relevância, cada um com _score/_motivo."""
-    termos = [_normalizar(t) for t in str(consulta).split() if t.strip()]
-    resultados = []
+def search(catalog, query, filters=None, limit=DEFAULT_LIMIT):
+    """Returns up to `limit` items ranked by relevance, each with _score/_reason."""
+    terms = [_normalize(t) for t in str(query).split() if t.strip()]
+    results = []
 
-    for item in catalogo:
-        if not _passa_nos_filtros(item, filtros):
+    for item in catalog:
+        if not _passes_filters(item, filters):
             continue
 
-        if not termos:  # filtro puro: lista tudo que passou
-            resultados.append(dict(item, _score=0, _motivo="filtro"))
+        if not terms:  # filter-only query: everything that passed
+            results.append(dict(item, _score=0, _reason="filter"))
             continue
 
-        score, motivos, casados = _pontuar(item, termos)
-        if len(casados) < len(termos) and not casados:
+        total, reasons, matched = _score(item, terms)
+        if not matched:
             continue
-        if score:
-            resultados.append(dict(item, _score=score, _motivo=", ".join(motivos)))
+        if total:
+            results.append(dict(item, _score=total, _reason=", ".join(reasons)))
 
-    resultados.sort(key=lambda r: (-r["_score"], r.get("id", "")))
-    return resultados[:limite]
+    results.sort(key=lambda r: (-r["_score"], r.get("id", "")))
+    return results[:limit]

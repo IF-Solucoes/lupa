@@ -1,64 +1,64 @@
-"""Classificação determinística de uma imagem, a partir de metadados apenas.
+"""Deterministic classification of an image, from metadata alone.
 
-Nada aqui gasta IA. O que o metadado não decide volta como None — e só esses
-casos ambíguos custam uma opinião do modelo de visão.
+Nothing here spends model tokens. Whatever the metadata cannot settle comes back
+as None — and only those ambiguous cases cost a vision-model opinion.
 """
 from math import gcd
 
-# Proporções que importam. Ordem não conta; a tolerância abaixo resolve empates.
-ASPECTOS = {
+# Aspect ratios that matter. Order is irrelevant; the tolerance settles ties.
+ASPECTS = {
     (1, 1): "1:1", (4, 5): "4:5", (5, 4): "5:4", (9, 16): "9:16", (16, 9): "16:9",
     (2, 3): "2:3", (3, 2): "3:2", (3, 4): "3:4", (4, 3): "4:3",
 }
-TOLERANCIA = 0.02
+TOLERANCE = 0.02
 
-# Abaixo disto, o OCR é ruído (marca d'água, plaquinha, nome de equipamento),
-# não uma peça gráfica.
-MIN_PALAVRAS_PARA_TEXTO = 5
-
-
-def _aspecto(w: int, h: int) -> str:
-    razao = w / h
-    for (a, b), rotulo in ASPECTOS.items():
-        if abs(razao - a / b) <= TOLERANCIA:
-            return rotulo
-    d = gcd(w, h)
-    return f"{w // d}:{h // d}"
+# Below this, OCR is noise (a watermark, a nameplate, an equipment label)
+# rather than a designed piece.
+MIN_WORDS_FOR_TEXT = 5
 
 
-def _orientacao(w: int, h: int) -> str:
-    if w == h:
-        return "quadrado"
-    return "paisagem" if w > h else "retrato"
+def _aspect(width, height):
+    ratio = width / height
+    for (a, b), label in ASPECTS.items():
+        if abs(ratio - a / b) <= TOLERANCE:
+            return label
+    divisor = gcd(width, height)
+    return f"{width // divisor}:{height // divisor}"
 
 
-def _tem_texto(ocr: str) -> bool:
-    return len(ocr.split()) >= MIN_PALAVRAS_PARA_TEXTO
+def _orientation(width, height):
+    if width == height:
+        return "square"
+    return "landscape" if width > height else "portrait"
 
 
-def classify(meta: dict) -> dict:
-    """Recebe metadados de uma imagem, devolve o que dá para afirmar de graça.
+def _has_text(ocr):
+    return len(ocr.split()) >= MIN_WORDS_FOR_TEXT
 
-    meta aceita: w, h, mime, exif {Make, Model}, ocr_text, name.
-    kind/medium vêm None quando o metadado não basta — aí quem decide é o VLM.
+
+def classify(meta):
+    """Takes image metadata, returns what can be asserted for free.
+
+    meta accepts: w, h, mime, exif {Make, Model}, ocr_text, name.
+    kind/medium come back None when metadata is not enough — the vision model decides those.
     """
-    w, h = int(meta["w"]), int(meta["h"])
+    width, height = int(meta["w"]), int(meta["h"])
     exif = meta.get("exif") or {}
     ocr = meta.get("ocr_text") or ""
 
-    source = "camera" if (exif.get("Make") or exif.get("Model")) else "gerado"
-    has_text = _tem_texto(ocr)
+    source = "camera" if (exif.get("Make") or exif.get("Model")) else "generated"
+    has_text = _has_text(ocr)
 
     kind = medium = None
     if source == "camera" and not has_text:
-        kind, medium = "foto", "na"
-    elif source == "gerado" and has_text:
-        kind, medium = "peca", "digital"
+        kind, medium = "photo", "na"
+    elif source == "generated" and has_text:
+        kind, medium = "design", "digital"
 
     return {
-        "w": w, "h": h,
-        "aspect": _aspecto(w, h),
-        "orientation": _orientacao(w, h),
+        "w": width, "h": height,
+        "aspect": _aspect(width, height),
+        "orientation": _orientation(width, height),
         "source": source,
         "has_text": has_text,
         "kind": kind,

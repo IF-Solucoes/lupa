@@ -1,22 +1,22 @@
-"""Escrita do índice: os artefatos que os agentes leem."""
+"""Writing the index: the artifacts agents read."""
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from lupa.build import escrever_indice, fazer_backup, nome_de_arquivo_de_tag
+from lupa.build import write_index, backup, tag_filename
 
-ITENS = [
-    {"id": "1", "file": "ponte.png", "url": "https://drive/1", "kind": "peca",
-     "medium": "digital", "orientation": "retrato", "has_text": True, "hash": "h1",
-     "caption": "Ponte à noite", "tags": ["ponte", "noturno"], "text": "MIGRAÇÃO", "labels": []},
-    {"id": "2", "file": "mesa.jpg", "url": "https://drive/2", "kind": "foto",
-     "medium": "na", "orientation": "paisagem", "has_text": False, "hash": "h2",
-     "caption": "Mesa de madeira", "tags": ["comida", "noturno"], "text": "", "labels": []},
+ITEMS = [
+    {"id": "1", "file": "bridge.png", "url": "https://drive/1", "kind": "design",
+     "medium": "digital", "orientation": "portrait", "has_text": True, "hash": "h1",
+     "caption": "Bridge at night", "tags": ["bridge", "night"], "text": "MIGRATION", "labels": []},
+    {"id": "2", "file": "table.jpg", "url": "https://drive/2", "kind": "photo",
+     "medium": "na", "orientation": "landscape", "has_text": False, "hash": "h2",
+     "caption": "Wooden table", "tags": ["food", "night"], "text": "", "labels": []},
 ]
 
 
-class BaseIndice(unittest.TestCase):
+class IndexTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
@@ -24,122 +24,122 @@ class BaseIndice(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def escrever(self, itens=None, **kw):
-        return escrever_indice(
-            self.dir, acervo="if-editorial", itens=itens if itens is not None else ITENS,
-            resumo=kw.pop("resumo", "+2 novas"), modelo="gemini-2.5-flash-lite",
-            custo_usd=kw.pop("custo_usd", 0.0001), agora=kw.pop("agora", "2026-08-20T14:32:00"), **kw)
+    def write(self, items=None, **kw):
+        return write_index(
+            self.dir, collection="if-editorial", items=items if items is not None else ITEMS,
+            summary=kw.pop("summary", "+2 added"), model="gemini-2.5-flash-lite",
+            cost_usd=kw.pop("cost_usd", 0.0001), now=kw.pop("now", "2026-08-20T14:32:00"), **kw)
 
 
-class TestCatalogo(BaseIndice):
-    def test_uma_linha_por_imagem(self):
-        self.escrever()
-        linhas = (self.dir / "catalog.jsonl").read_text().strip().split("\n")
-        self.assertEqual(len(linhas), 2)
+class TestCatalog(IndexTestCase):
+    def test_one_line_per_image(self):
+        self.write()
+        lines = (self.dir / "catalog.jsonl").read_text().strip().split("\n")
+        self.assertEqual(len(lines), 2)
 
-    def test_cada_linha_e_json_valido(self):
-        self.escrever()
-        for linha in (self.dir / "catalog.jsonl").read_text().strip().split("\n"):
-            self.assertIn("id", json.loads(linha))
+    def test_every_line_is_valid_json(self):
+        self.write()
+        for line in (self.dir / "catalog.jsonl").read_text().strip().split("\n"):
+            self.assertIn("id", json.loads(line))
 
-    def test_acentos_sobrevivem_sem_escapar(self):
-        self.escrever()
-        self.assertIn("Ponte à noite", (self.dir / "catalog.jsonl").read_text())
+    def test_non_ascii_survives_unescaped(self):
+        self.write()
+        self.assertIn("Bridge at night", (self.dir / "catalog.jsonl").read_text())
 
-    def test_item_removido_some_do_catalogo(self):
-        self.escrever()
-        self.escrever(itens=[ITENS[0]])
-        linhas = (self.dir / "catalog.jsonl").read_text().strip().split("\n")
-        self.assertEqual(len(linhas), 1)
+    def test_a_removed_item_leaves_the_catalog(self):
+        self.write()
+        self.write(items=[ITEMS[0]])
+        lines = (self.dir / "catalog.jsonl").read_text().strip().split("\n")
+        self.assertEqual(len(lines), 1)
 
 
-class TestIndexMd(BaseIndice):
-    def test_traz_o_total_de_imagens(self):
-        self.escrever()
+class TestIndexMarkdown(IndexTestCase):
+    def test_it_states_the_image_count(self):
+        self.write()
         self.assertIn("2", (self.dir / "INDEX.md").read_text())
 
-    def test_avisa_o_agente_para_nao_abrir_as_imagens(self):
-        self.escrever()
-        texto = (self.dir / "INDEX.md").read_text().lower()
-        self.assertIn("pixels", texto)
+    def test_it_warns_the_agent_not_to_open_images(self):
+        self.write()
+        text = (self.dir / "INDEX.md").read_text().lower()
+        self.assertIn("pixels", text)
 
-    def test_lista_o_vocabulario_de_tags_com_contagem(self):
-        self.escrever()
-        texto = (self.dir / "INDEX.md").read_text()
-        self.assertIn("noturno", texto)
-        self.assertIn("2", texto)  # noturno aparece nas duas imagens
+    def test_it_lists_the_tag_vocabulary_with_counts(self):
+        self.write()
+        text = (self.dir / "INDEX.md").read_text()
+        self.assertIn("night", text)
+        self.assertIn("2", text)  # "night" appears on both images
 
 
-class TestByTag(BaseIndice):
-    def test_cria_um_arquivo_por_tag(self):
-        self.escrever()
+class TestByTag(IndexTestCase):
+    def test_it_creates_one_file_per_tag(self):
+        self.write()
         tags = sorted(p.stem for p in (self.dir / "by-tag").glob("*.md"))
-        self.assertEqual(tags, ["comida", "noturno", "ponte"])
+        self.assertEqual(tags, ["bridge", "food", "night"])
 
-    def test_arquivo_de_tag_lista_os_membros(self):
-        self.escrever()
-        texto = (self.dir / "by-tag" / "noturno.md").read_text()
-        self.assertIn("ponte.png", texto)
-        self.assertIn("mesa.jpg", texto)
+    def test_a_tag_file_lists_its_members(self):
+        self.write()
+        text = (self.dir / "by-tag" / "night.md").read_text()
+        self.assertIn("bridge.png", text)
+        self.assertIn("table.jpg", text)
 
-    def test_arquivo_de_tag_traz_a_url(self):
-        self.escrever()
-        self.assertIn("https://drive/1", (self.dir / "by-tag" / "ponte.md").read_text())
+    def test_a_tag_file_carries_the_url(self):
+        self.write()
+        self.assertIn("https://drive/1", (self.dir / "by-tag" / "bridge.md").read_text())
 
-    def test_tag_com_acento_e_espaco_vira_nome_seguro(self):
-        self.assertEqual(nome_de_arquivo_de_tag("Pão Artesanal"), "pao-artesanal")
+    def test_an_accented_tag_becomes_a_safe_filename(self):
+        self.assertEqual(tag_filename("Café Society"), "cafe-society")
 
-    def test_tags_que_sumiram_nao_deixam_arquivo_orfao(self):
-        self.escrever()
-        self.escrever(itens=[ITENS[1]])  # "ponte" deixou de existir
-        self.assertFalse((self.dir / "by-tag" / "ponte.md").exists())
-
-
-class TestManifesto(BaseIndice):
-    def test_guarda_hash_de_cada_item(self):
-        self.escrever()
-        m = json.loads((self.dir / "MANIFEST.json").read_text())
-        self.assertEqual(m["itens"]["1"]["hash"], "h1")
-
-    def test_guarda_total_e_acervo(self):
-        self.escrever()
-        m = json.loads((self.dir / "MANIFEST.json").read_text())
-        self.assertEqual(m["total"], 2)
-        self.assertEqual(m["acervo"], "if-editorial")
-
-    def test_conta_as_rodadas(self):
-        self.escrever()
-        self.assertEqual(json.loads((self.dir / "MANIFEST.json").read_text())["rodadas"], 1)
-        self.escrever()
-        self.assertEqual(json.loads((self.dir / "MANIFEST.json").read_text())["rodadas"], 2)
+    def test_vanished_tags_leave_no_orphan_file(self):
+        self.write()
+        self.write(items=[ITEMS[1]])  # "bridge" is gone
+        self.assertFalse((self.dir / "by-tag" / "bridge.md").exists())
 
 
-class TestRelatorioDaRodada(BaseIndice):
-    def test_escreve_um_relatorio_por_rodada(self):
-        self.escrever(agora="2026-08-20T14:32:00")
+class TestManifest(IndexTestCase):
+    def test_it_stores_a_hash_per_item(self):
+        self.write()
+        manifest = json.loads((self.dir / "MANIFEST.json").read_text())
+        self.assertEqual(manifest["items"]["1"]["hash"], "h1")
+
+    def test_it_stores_the_total_and_the_collection(self):
+        self.write()
+        manifest = json.loads((self.dir / "MANIFEST.json").read_text())
+        self.assertEqual(manifest["total"], 2)
+        self.assertEqual(manifest["collection"], "if-editorial")
+
+    def test_it_counts_runs(self):
+        self.write()
+        self.assertEqual(json.loads((self.dir / "MANIFEST.json").read_text())["runs"], 1)
+        self.write()
+        self.assertEqual(json.loads((self.dir / "MANIFEST.json").read_text())["runs"], 2)
+
+
+class TestRunReport(IndexTestCase):
+    def test_it_writes_one_report_per_run(self):
+        self.write(now="2026-08-20T14:32:00")
         self.assertTrue((self.dir / "runs" / "2026-08-20T14-32-00.md").exists())
 
-    def test_relatorio_traz_resumo_custo_e_modelo(self):
-        self.escrever(resumo="+40 novas · -5 removidas", custo_usd=0.004)
-        texto = list((self.dir / "runs").glob("*.md"))[0].read_text()
-        self.assertIn("+40 novas", texto)
-        self.assertIn("0.004", texto)
-        self.assertIn("gemini-2.5-flash-lite", texto)
+    def test_the_report_carries_summary_cost_and_model(self):
+        self.write(summary="+40 added · -5 removed", cost_usd=0.004)
+        text = list((self.dir / "runs").glob("*.md"))[0].read_text()
+        self.assertIn("+40 added", text)
+        self.assertIn("0.004", text)
+        self.assertIn("gemini-2.5-flash-lite", text)
 
 
-class TestBackup(BaseIndice):
-    def test_backup_copia_o_indice_anterior(self):
-        self.escrever()
-        destino = fazer_backup(self.dir, agora="2026-08-20T15-00-00")
-        self.assertTrue((destino / "catalog.jsonl").exists())
-        self.assertTrue((destino / "MANIFEST.json").exists())
+class TestBackup(IndexTestCase):
+    def test_backup_copies_the_previous_index(self):
+        self.write()
+        destination = backup(self.dir, now="2026-08-20T15-00-00")
+        self.assertTrue((destination / "catalog.jsonl").exists())
+        self.assertTrue((destination / "MANIFEST.json").exists())
 
-    def test_backup_em_indice_inexistente_nao_quebra(self):
-        self.assertIsNone(fazer_backup(self.dir / "vazio", agora="x"))
+    def test_backup_of_a_missing_index_does_not_crash(self):
+        self.assertIsNone(backup(self.dir / "missing", now="x"))
 
-    def test_backup_nao_apaga_o_indice_atual(self):
-        self.escrever()
-        fazer_backup(self.dir, agora="2026-08-20T15-00-00")
+    def test_backup_does_not_remove_the_current_index(self):
+        self.write()
+        backup(self.dir, now="2026-08-20T15-00-00")
         self.assertTrue((self.dir / "catalog.jsonl").exists())
 
 

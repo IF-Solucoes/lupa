@@ -1,117 +1,116 @@
-"""Descrição por VLM: prompt, parsing e a fusão com o que já se sabia de graça."""
+"""Vision description: prompt, parsing, and the merge with what was already free."""
 import unittest
-from lupa.caption import montar_prompt, parse_resposta, mesclar, estimar_custo, RespostaInvalida
+from lupa.caption import (build_prompt, parse_response, merge, estimate_cost,
+                          format_cost, InvalidResponse)
 
-META_FOTO = {"file": "mesa.jpg", "kind": "foto", "medium": "na", "source": "camera",
-             "has_text": False, "aspect": "3:2", "orientation": "paisagem",
-             "ocr_text": "", "labels": []}
-META_AMBIGUA = {"file": "banner.jpg", "kind": None, "medium": None, "source": "camera",
-                "has_text": True, "aspect": "3:2", "orientation": "paisagem",
-                "ocr_text": "PROMOÇÃO", "labels": []}
+PHOTO_META = {"file": "table.jpg", "kind": "photo", "medium": "na", "source": "camera",
+              "has_text": False, "aspect": "3:2", "orientation": "landscape",
+              "ocr_text": "", "labels": []}
+AMBIGUOUS_META = {"file": "banner.jpg", "kind": None, "medium": None, "source": "camera",
+                  "has_text": True, "aspect": "3:2", "orientation": "landscape",
+                  "ocr_text": "SALE", "labels": []}
 
-VLM = {"caption": "Mesa de madeira com pão", "tags": ["Comida", "MADEIRA", "comida"],
-       "scene": "interior", "people": 0, "palette": ["#c8a06a"],
-       "kind": "peca", "medium": "digital"}
+VISION = {"caption": "Wooden table with bread", "tags": ["Food", "WOOD", "food"],
+          "scene": "indoor", "people": 0, "palette": ["#c8a06a"],
+          "kind": "design", "medium": "digital"}
 
 
 class TestPrompt(unittest.TestCase):
-    def test_proibe_explicitamente_transcrever_porque_o_drive_ja_deu_o_ocr(self):
-        p = montar_prompt(META_FOTO).lower()
-        self.assertIn("não transcreva", p)
+    def test_it_forbids_transcription_because_drive_already_did_ocr(self):
+        self.assertIn("do not transcribe", build_prompt(PHOTO_META).lower())
 
-    def test_nao_gasta_o_modelo_pedindo_lista_de_objetos(self):
-        # os labels do Google já vêm de graça; pedir de novo é pagar duas vezes
-        p = montar_prompt(META_FOTO).lower()
-        self.assertNotIn("liste os objetos", p)
-        self.assertNotIn("identifique os objetos", p)
+    def test_it_does_not_pay_the_model_to_list_objects(self):
+        # Google labels are already free; asking again pays twice
+        prompt = build_prompt(PHOTO_META).lower()
+        self.assertNotIn("list the objects", prompt)
+        self.assertNotIn("identify the objects", prompt)
 
-    def test_pede_json_e_lista_a_taxonomia_fechada(self):
-        p = montar_prompt(META_AMBIGUA)
-        self.assertIn("JSON", p)
-        for k in ("foto", "peca", "captura", "grafico", "logo", "outro"):
-            self.assertIn(k, p)
+    def test_it_asks_for_json_and_states_the_closed_taxonomy(self):
+        prompt = build_prompt(AMBIGUOUS_META)
+        self.assertIn("JSON", prompt)
+        for kind in ("photo", "design", "screenshot", "diagram", "logo", "other"):
+            self.assertIn(kind, prompt)
 
-    def test_quando_o_tipo_ja_e_conhecido_o_prompt_nao_pergunta_de_novo(self):
-        self.assertNotIn("kind", montar_prompt(META_FOTO))
+    def test_a_known_kind_is_not_asked_about_again(self):
+        self.assertNotIn("kind", build_prompt(PHOTO_META))
 
-    def test_quando_o_tipo_e_ambiguo_o_prompt_pergunta(self):
-        self.assertIn("kind", montar_prompt(META_AMBIGUA))
+    def test_an_ambiguous_kind_is_asked_about(self):
+        self.assertIn("kind", build_prompt(AMBIGUOUS_META))
 
+    def test_the_output_language_defaults_to_english(self):
+        self.assertIn("English", build_prompt(PHOTO_META))
 
-class TestParse(unittest.TestCase):
-    def test_json_limpo(self):
-        self.assertEqual(parse_resposta('{"caption": "oi"}')["caption"], "oi")
-
-    def test_json_dentro_de_cerca_markdown(self):
-        self.assertEqual(parse_resposta('```json\n{"caption": "oi"}\n```')["caption"], "oi")
-
-    def test_json_com_texto_em_volta(self):
-        self.assertEqual(parse_resposta('Claro!\n{"caption": "oi"}\nEspero ter ajudado')["caption"], "oi")
-
-    def test_resposta_sem_json_levanta_erro_claro(self):
-        with self.assertRaises(RespostaInvalida):
-            parse_resposta("desculpe, não consigo ver a imagem")
+    def test_the_output_language_can_be_switched(self):
+        self.assertIn("Portuguese", build_prompt(PHOTO_META, language="pt"))
 
 
-class TestMesclagem(unittest.TestCase):
-    def test_o_deterministico_vence_o_modelo(self):
-        # metadado disse foto/na; o VLM chutou peca/digital e deve ser ignorado
-        r = mesclar(META_FOTO, VLM)
-        self.assertEqual(r["kind"], "foto")
+class TestParsing(unittest.TestCase):
+    def test_clean_json(self):
+        self.assertEqual(parse_response('{"caption": "hi"}')["caption"], "hi")
+
+    def test_json_inside_a_markdown_fence(self):
+        self.assertEqual(parse_response('```json\n{"caption": "hi"}\n```')["caption"], "hi")
+
+    def test_json_surrounded_by_chatter(self):
+        self.assertEqual(parse_response('Sure!\n{"caption": "hi"}\nHope that helps')["caption"], "hi")
+
+    def test_a_response_without_json_raises_a_clear_error(self):
+        with self.assertRaises(InvalidResponse):
+            parse_response("sorry, I cannot see the image")
+
+
+class TestMerge(unittest.TestCase):
+    def test_metadata_beats_the_model(self):
+        # metadata said photo/na; the model guessed design/digital and must be ignored
+        r = merge(PHOTO_META, VISION)
+        self.assertEqual(r["kind"], "photo")
         self.assertEqual(r["medium"], "na")
 
-    def test_o_modelo_preenche_o_que_o_metadado_nao_sabia(self):
-        r = mesclar(META_AMBIGUA, VLM)
-        self.assertEqual(r["kind"], "peca")
+    def test_the_model_fills_what_metadata_did_not_know(self):
+        r = merge(AMBIGUOUS_META, VISION)
+        self.assertEqual(r["kind"], "design")
         self.assertEqual(r["medium"], "digital")
 
-    def test_kind_invento_do_modelo_vira_outro(self):
-        r = mesclar(META_AMBIGUA, dict(VLM, kind="fotografia-artistica"))
-        self.assertEqual(r["kind"], "outro")
+    def test_a_kind_invented_by_the_model_becomes_other(self):
+        self.assertEqual(merge(AMBIGUOUS_META, dict(VISION, kind="fine-art-photo"))["kind"], "other")
 
-    def test_medium_invento_do_modelo_vira_na(self):
-        r = mesclar(META_AMBIGUA, dict(VLM, medium="impresso-digital"))
-        self.assertEqual(r["medium"], "na")
+    def test_a_medium_invented_by_the_model_becomes_na(self):
+        self.assertEqual(merge(AMBIGUOUS_META, dict(VISION, medium="print-digital"))["medium"], "na")
 
-    def test_tags_ficam_minusculas_e_sem_repeticao(self):
-        self.assertEqual(sorted(mesclar(META_FOTO, VLM)["tags"]), ["comida", "madeira"])
+    def test_tags_are_lowercased_and_deduplicated(self):
+        self.assertEqual(sorted(merge(PHOTO_META, VISION)["tags"]), ["food", "wood"])
 
-    def test_o_ocr_do_drive_entra_no_campo_text(self):
-        r = mesclar(META_AMBIGUA, VLM)
-        self.assertEqual(r["text"], "PROMOÇÃO")
+    def test_the_drive_ocr_lands_in_the_text_field(self):
+        self.assertEqual(merge(AMBIGUOUS_META, VISION)["text"], "SALE")
 
-    def test_caption_ausente_no_modelo_nao_quebra(self):
-        self.assertEqual(mesclar(META_FOTO, {})["caption"], "")
+    def test_a_missing_caption_does_not_crash(self):
+        self.assertEqual(merge(PHOTO_META, {})["caption"], "")
 
 
-class TestCusto(unittest.TestCase):
-    def test_lote_em_batch_custa_menos_que_sincrono(self):
-        self.assertLess(estimar_custo(1000, batch=True), estimar_custo(1000, batch=False))
+class TestCost(unittest.TestCase):
+    def test_batch_costs_less_than_synchronous(self):
+        self.assertLess(estimate_cost(1000, batch=True), estimate_cost(1000, batch=False))
 
-    def test_mil_imagens_custam_centavos(self):
-        self.assertLess(estimar_custo(1000, batch=True), 0.50)
+    def test_a_thousand_images_cost_cents(self):
+        self.assertLess(estimate_cost(1000, batch=True), 0.50)
 
-    def test_acervo_vazio_custa_zero(self):
-        self.assertEqual(estimar_custo(0, batch=True), 0.0)
+    def test_an_empty_collection_costs_nothing(self):
+        self.assertEqual(estimate_cost(0, batch=True), 0.0)
+
+
+class TestCostFormatting(unittest.TestCase):
+    def test_a_tiny_value_is_not_scientific_notation(self):
+        self.assertNotIn("e-", format_cost(0.00007))
+
+    def test_below_a_cent_is_spelled_out(self):
+        self.assertIn("under", format_cost(0.00007))
+
+    def test_an_ordinary_value_gets_two_decimals(self):
+        self.assertEqual(format_cost(1.234), "US$ 1.23")
+
+    def test_zero_reads_as_zero(self):
+        self.assertIn("0", format_cost(0))
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestFormatoDoCusto(unittest.TestCase):
-    def test_valor_minusculo_nao_vira_notacao_cientifica(self):
-        from lupa.caption import formatar_custo
-        self.assertNotIn("e-", formatar_custo(0.00007))
-
-    def test_valor_abaixo_de_um_centavo_e_dito_por_extenso(self):
-        from lupa.caption import formatar_custo
-        self.assertIn("menos de", formatar_custo(0.00007))
-
-    def test_valor_normal_sai_com_duas_casas(self):
-        from lupa.caption import formatar_custo
-        self.assertEqual(formatar_custo(1.234), "US$ 1.23")
-
-    def test_zero_e_dito_como_zero(self):
-        from lupa.caption import formatar_custo
-        self.assertIn("0", formatar_custo(0))

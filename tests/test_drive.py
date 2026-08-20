@@ -1,89 +1,87 @@
-"""Leitura do Drive: parsing dos metadados que a API devolve."""
+"""Reading Drive: parsing the metadata the API returns."""
 import unittest
-from lupa.drive import separar_ocr_e_labels, normalizar_arquivo, query_da_pasta
+from lupa.drive import split_ocr_and_labels, normalize_file, folder_query
 
-SNIPPET_REAL = (
-    "MIGRAÇÃO\n\nAdiar a modernização\n\npor medo de parar também é decisão de risco.\n"
+REAL_SNIPPET = (
+    "MIGRATION\n\nPutting off modernization\n\nout of fear of downtime is also a risk.\n"
     "\n  \n  \nImage labels: \\[Bridge; Cable-stayed bridge; Technology; Diagram\\]"
 )
 
 
 class TestSnippet(unittest.TestCase):
-    def test_extrai_o_texto_ocr_sem_os_labels(self):
-        ocr, _ = separar_ocr_e_labels(SNIPPET_REAL)
-        self.assertIn("MIGRAÇÃO", ocr)
+    def test_it_extracts_the_ocr_text_without_the_labels(self):
+        ocr, _ = split_ocr_and_labels(REAL_SNIPPET)
+        self.assertIn("MIGRATION", ocr)
         self.assertNotIn("Image labels", ocr)
         self.assertNotIn("Bridge", ocr)
 
-    def test_extrai_a_lista_de_labels(self):
-        _, labels = separar_ocr_e_labels(SNIPPET_REAL)
+    def test_it_extracts_the_label_list(self):
+        _, labels = split_ocr_and_labels(REAL_SNIPPET)
         self.assertEqual(labels, ["Bridge", "Cable-stayed bridge", "Technology", "Diagram"])
 
-    def test_snippet_sem_labels_devolve_lista_vazia(self):
-        ocr, labels = separar_ocr_e_labels("só texto aqui")
-        self.assertEqual(ocr, "só texto aqui")
+    def test_a_snippet_without_labels_returns_an_empty_list(self):
+        ocr, labels = split_ocr_and_labels("just text here")
+        self.assertEqual(ocr, "just text here")
         self.assertEqual(labels, [])
 
-    def test_snippet_vazio_nao_quebra(self):
-        self.assertEqual(separar_ocr_e_labels(""), ("", []))
+    def test_an_empty_snippet_does_not_crash(self):
+        self.assertEqual(split_ocr_and_labels(""), ("", []))
 
-    def test_snippet_ausente_nao_quebra(self):
-        self.assertEqual(separar_ocr_e_labels(None), ("", []))
+    def test_a_missing_snippet_does_not_crash(self):
+        self.assertEqual(split_ocr_and_labels(None), ("", []))
 
-    def test_labels_sem_escape_tambem_funcionam(self):
-        _, labels = separar_ocr_e_labels("txt\nImage labels: [Food; Table]")
+    def test_unescaped_labels_work_too(self):
+        _, labels = split_ocr_and_labels("txt\nImage labels: [Food; Table]")
         self.assertEqual(labels, ["Food", "Table"])
 
 
-class TestNormalizacao(unittest.TestCase):
-    def test_mapeia_os_campos_da_api(self):
-        bruto = {
+class TestNormalization(unittest.TestCase):
+    def test_it_maps_the_api_fields(self):
+        raw = {
             "id": "1a2B", "name": "post-24.png", "mimeType": "image/png",
             "md5Checksum": "abc123", "size": "4321764",
             "imageMediaMetadata": {"width": 1080, "height": 1350},
             "webViewLink": "https://drive.google.com/file/d/1a2B/view",
         }
-        f = normalizar_arquivo(bruto)
-        self.assertEqual(f["id"], "1a2B")
-        self.assertEqual(f["file"], "post-24.png")
-        self.assertEqual(f["hash"], "abc123")
-        self.assertEqual((f["w"], f["h"]), (1080, 1350))
-        self.assertEqual(f["url"], "https://drive.google.com/file/d/1a2B/view")
+        entry = normalize_file(raw)
+        self.assertEqual(entry["id"], "1a2B")
+        self.assertEqual(entry["file"], "post-24.png")
+        self.assertEqual(entry["hash"], "abc123")
+        self.assertEqual((entry["w"], entry["h"]), (1080, 1350))
+        self.assertEqual(entry["url"], "https://drive.google.com/file/d/1a2B/view")
 
-    def test_sem_md5_usa_tamanho_e_data_como_hash(self):
-        # Google Docs e alguns formatos não têm md5Checksum
-        f = normalizar_arquivo({"id": "x", "name": "a.png", "size": "100",
+    def test_without_md5_it_fingerprints_size_and_date(self):
+        # Google Docs and some formats carry no md5Checksum
+        entry = normalize_file({"id": "x", "name": "a.png", "size": "100",
                                 "modifiedTime": "2026-08-20T10:00:00Z"})
-        self.assertTrue(f["hash"])
-        self.assertNotEqual(f["hash"], "")
+        self.assertTrue(entry["hash"])
 
-    def test_extrai_exif_da_camera(self):
-        bruto = {"id": "x", "name": "f.jpg", "imageMediaMetadata": {
+    def test_it_extracts_the_camera_exif(self):
+        raw = {"id": "x", "name": "f.jpg", "imageMediaMetadata": {
             "width": 4032, "height": 3024, "cameraMake": "Apple", "cameraModel": "iPhone 15"}}
-        f = normalizar_arquivo(bruto)
-        self.assertEqual(f["exif"]["Make"], "Apple")
+        self.assertEqual(normalize_file(raw)["exif"]["Make"], "Apple")
 
-    def test_sem_dimensoes_usa_zero(self):
-        f = normalizar_arquivo({"id": "x", "name": "a.png"})
-        self.assertEqual((f["w"], f["h"]), (0, 0))
+    def test_missing_dimensions_become_zero(self):
+        entry = normalize_file({"id": "x", "name": "a.png"})
+        self.assertEqual((entry["w"], entry["h"]), (0, 0))
 
-    def test_arquivo_na_lixeira_e_marcado(self):
-        self.assertTrue(normalizar_arquivo({"id": "x", "name": "a.png", "trashed": True})["trashed"])
+    def test_a_trashed_file_is_flagged(self):
+        self.assertTrue(normalize_file({"id": "x", "name": "a.png", "trashed": True})["trashed"])
 
-    def test_traz_ocr_e_labels_do_snippet(self):
-        f = normalizar_arquivo({"id": "x", "name": "a.png", "contentSnippet": SNIPPET_REAL})
-        self.assertIn("MIGRAÇÃO", f["ocr_text"])
-        self.assertIn("Bridge", f["labels"])
+    def test_it_carries_ocr_and_labels_from_the_snippet(self):
+        entry = normalize_file({"id": "x", "name": "a.png", "contentSnippet": REAL_SNIPPET})
+        self.assertIn("MIGRATION", entry["ocr_text"])
+        self.assertIn("Bridge", entry["labels"])
 
 
 class TestQuery(unittest.TestCase):
-    def test_restringe_a_pasta_e_a_imagens(self):
-        q = query_da_pasta("PASTA123")
-        self.assertIn("'PASTA123' in parents", q)
-        self.assertIn("image/", q)
+    def test_it_restricts_to_the_folder_and_to_images(self):
+        query = folder_query("FOLDER123")
+        self.assertIn("'FOLDER123' in parents", query)
+        self.assertIn("image/", query)
 
-    def test_exclui_a_lixeira(self):
-        self.assertIn("trashed = false", query_da_pasta("X"))
+    def test_it_excludes_the_trash(self):
+        self.assertIn("trashed = false", folder_query("X"))
 
 
 if __name__ == "__main__":

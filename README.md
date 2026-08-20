@@ -1,185 +1,202 @@
 # lupa
 
-**Índice de acervo visual para agentes de IA.** Transforma uma pasta de imagens do
-Google Drive em texto pesquisável, para que um agente encontre a imagem certa **sem
-abrir imagem nenhuma**.
+**A visual collection index for AI agents.** It turns a folder of images — in Google
+Drive or on disk — into searchable text, so an agent can find the right image
+**without opening a single one**.
 
 ```
-$ lupa search "banner impresso azul" --kind peca --medium fisico
+$ lupa search "printed banner blue" --kind design --medium physical
 
-1 candidato (de 3.412 imagens):
+1 candidate (out of 3,412 images):
 
-- banner-evento.jpg [peca/fisico, paisagem] — Banner impresso em pé no estande,
-  logo branco sobre azul, salão ao fundo
-  tags: banner, evento, impresso, azul
+- event-banner.jpg [design/physical, landscape] — Printed banner standing at a
+  booth, white logo on blue, hall behind it
+  tags: banner, event, printed, blue
   https://drive.google.com/file/d/d5/view
-  casou por: tags:azul, tags:impresso
+  matched on: tags:blue, tags:printed
 ```
 
-## O problema
+## The problem
 
-Peça a uma IA para achar uma referência em 3.000 fotos e ela vai olhar as fotos. Cada
-imagem custa tokens; três mil imagens custam caro o bastante para você desistir. Pior:
-ela repete o gasto a cada nova pergunta.
+Ask an AI to find a reference among 3,000 photos and it will look at the photos.
+Every image costs tokens; three thousand images cost enough to make you give up.
+Worse, it pays that cost again on the next question.
 
-O `lupa` inverte isso. Cada imagem é descrita **uma vez na vida**. Depois, todas as
-perguntas são respondidas sobre texto.
+lupa inverts this. Each image is described **once in its life**. After that, every
+question is answered over text.
 
-## Como funciona
+## How it works
 
-1. **Colhe o que já é de graça.** O Google Drive faz OCR das imagens e devolve isso
-   nos metadados. O `lupa` aproveita — não paga por OCR.
-2. **Decide o que der por metadado.** EXIF, proporção, formato e densidade de texto
-   já dizem se algo é foto de câmera ou peça de design. Custo zero.
-3. **Só então chama o modelo de visão**, e só para o que falta: composição, luz,
-   paleta, estilo, tipo ambíguo. Gemini 2.5 Flash-Lite, em lote.
-4. **Escreve um índice de texto** dentro da própria pasta do Drive (`_lupa/`), em três
-   níveis de leitura, do barato ao caro.
+1. **Collect what is already free.** Google Drive runs OCR on images and returns it
+   in the file metadata. lupa harvests that — it never pays for OCR.
+2. **Decide whatever metadata can decide.** EXIF, aspect ratio, format, and text
+   density already tell a camera photo from a design export. Zero cost.
+3. **Only then call the vision model**, and only for what is left: composition,
+   light, palette, style, ambiguous types. Gemini 2.5 Flash-Lite, in batch.
+4. **Write a text index** inside the collection itself (`_lupa/`), at three reading
+   levels, cheapest first.
 
-Da segunda rodada em diante, só o que mudou custa alguma coisa.
+From the second run on, only what changed costs anything.
 
-### Pasta local e pasta do Drive não são a mesma coisa
+### A local folder and a Drive folder are not the same thing
 
-Você pode indexar uma pasta do disco — inclusive a que o Google Drive for Desktop
-sincroniza. Funciona, e o lupa detecta esse caso. Mas pela API do Drive você ganha
-três coisas que o disco não dá:
+You can index a folder on disk — including the one Google Drive for Desktop
+synchronizes. It works, and lupa detects that case. But the Drive API gives you
+three things the disk cannot:
 
-- **o OCR que o Google já fez**, de graça — sem ele, o texto embutido nas peças
-  não entra na busca;
-- **links `https` compartilháveis**, que o Cowork e outras pessoas abrem;
-- **o id imutável de cada arquivo** — renomear a pasta deixa de forçar reindexação.
+- **the OCR Google already ran**, free — without it, text baked into artwork never
+  reaches search;
+- **shareable `https` links**, which other people and other agents can open;
+- **an immutable id per file** — renaming a folder stops forcing a full reindex.
 
-Quando você aponta uma pasta montada, o pré-flight avisa e segue em frente. A
-escolha é informada, não obrigatória.
+When you point at a mounted folder, preflight says so and carries on. The choice is
+informed, not mandatory.
 
-## Instalação
+## Install
 
 ```bash
 git clone https://github.com/IF-Solucoes/lupa
-cd lupa && python3 -m unittest discover -s tests   # 146 testes, sem rede
+cd lupa && python3 -m unittest discover -s tests   # 220 tests, no network
 ```
 
-Como plugin do Claude Code, o servidor MCP sobe sozinho — ele não tem dependências,
-só a biblioteca padrão do Python.
+As a Claude Code plugin, the MCP server starts on its own — it has no dependencies
+beyond the Python standard library.
 
-Para **indexar** (não para buscar) você precisa de:
+To **index** (not to search) you also need:
 
-- `pip install google-api-python-client google-auth-oauthlib`
-- uma chave da [Gemini API](https://aistudio.google.com/apikey)
-- um cliente OAuth de app-desktop do Google Cloud, com a Drive API ativada
+- `pip install google-api-python-client google-auth-oauthlib` (Drive collections only)
+- a [Gemini API key](https://aistudio.google.com/apikey)
+- an OAuth desktop-app client from Google Cloud, with the Drive API enabled
 
-Escopos usados: `drive.readonly` para ler o acervo e `drive.file` para escrever
-**apenas** os arquivos que o próprio lupa cria. Ele nunca altera um arquivo seu.
+Scopes used: `drive.readonly` to read the collection and `drive.file` to write
+**only** the files lupa itself creates. It never modifies a file of yours.
 
-## Uso
+## Usage
 
-Aponte para o acervo do jeito que for mais fácil. O `lupa` entende os quatro:
+Point at the collection whichever way is easiest. lupa understands all four:
 
 ```bash
-python3 -m lupa index "https://drive.google.com/drive/folders/1a2B3c"   # URL do Drive
-python3 -m lupa index 1a2B3c                                            # id da pasta
-python3 -m lupa index ~/Fotos/Cliente                                   # pasta local
-python3 -m lupa index if-editorial                                      # apelido, depois da 1ª vez
+python3 -m lupa index "https://drive.google.com/drive/folders/1a2B3c"   # Drive URL
+python3 -m lupa index 1a2B3c                                            # folder id
+python3 -m lupa index ~/Photos/Client                                   # local path
+python3 -m lupa index if-editorial                                      # saved name
 ```
 
-`index` e `update` fazem a mesma coisa: o lupa olha o índice e decide se é a
-primeira rodada ou uma atualização. **Você não precisa escolher.**
+`index` and `update` are the same command: lupa reads the index and decides whether
+this is a first run or an update. **You never have to choose.**
 
-### Toda rodada começa pelo pré-flight
+### Every run starts with preflight
 
-Antes de gastar um centavo, o comando checa o ambiente, explica o que falta e
-mostra o plano:
+Before spending a cent, the command checks the environment, explains what is
+missing, and shows the plan:
 
 ```
-Pré-flight · acervo "if-editorial"
+Preflight · collection "if-editorial"
 
-  ✓ acervo: pasta do Google Drive · id 1a2B3c · apelido "if-editorial"
-  ✓ origem do acervo: pela API do Drive — com OCR e link compartilhável
-  ✗ chave do Gemini: GEMINI_API_KEY está vazia
-      Pegue uma chave em https://aistudio.google.com/apikey e escreva em
-      ~/.francis/secrets/lupa/lupa.env    →    GEMINI_API_KEY=sua-chave
-  ✓ estado do índice: já existe — será um update, só o que mudou custa
+  ✓ collection: Google Drive folder · id 1a2B3c · named "if-editorial"
+  ✓ collection source: through the Drive API — with OCR and shareable links
+  ✗ Gemini key: GEMINI_API_KEY is empty
+      Get a key at https://aistudio.google.com/apikey and write it into
+      your lupa.env    →    GEMINI_API_KEY=your-key
+  ✓ index state: already exists — this is an update, only changes cost anything
 
-Plano desta rodada
-  +40 novas · ~3 alteradas · -5 removidas · =3364 intactas
-  imagens a descrever: 43
-  custo estimado: menos de US$ 0.01
+Plan for this run
+  +40 added · ~3 changed · -5 removed · =3364 unchanged
+  images to describe: 43
+  estimated cost: under US$ 0.01
 ```
 
-Com um `✗`, ele para e não gasta nada. Sem `✗`, ele mostra o plano e pergunta
-antes de prosseguir. `--dry-run` para logo depois do plano; `--yes` não pergunta.
+On a `✗` it stops and spends nothing. Otherwise it shows the plan and asks before
+proceeding. `--dry-run` stops right after the plan; `--yes` skips the question.
 
-### Consultar
+### Searching
 
 ```bash
-python3 -m lupa search "pão forno luz quente" --kind foto
+python3 -m lupa search "bread oven warm light" --kind photo
 python3 -m lupa status
 ```
 
-## O índice
+## The index
 
 ```
-<acervo>/_lupa/
-├── INDEX.md          # porta de entrada (~2 KB): contagens, vocabulário, como consultar
-├── catalog.jsonl     # uma linha JSON por imagem — para filtrar por campo
-├── by-tag/<tag>.md   # índice invertido, legível sem executar código
-├── contact-sheets/   # grades visuais, para curadoria humana
-├── MANIFEST.json     # hashes — é o que torna a atualização incremental
-└── runs/<data>.md    # o que cada rodada mudou
+<collection>/_lupa/
+├── INDEX.md          # entry point (~2 KB): counts, vocabulary, how to query
+├── catalog.jsonl     # one JSON line per image — for field-level filtering
+├── by-tag/<tag>.md   # inverted index, readable without running code
+├── contact-sheets/   # visual grids, for human curation
+├── MANIFEST.json     # hashes — what makes updates incremental
+└── runs/<date>.md    # what each run changed
 ```
 
-Cada linha do catálogo segue [`schema/index-v1.json`](schema/index-v1.json):
+Every catalog line follows [`schema/index-v1.json`](schema/index-v1.json):
 
 ```json
-{"id":"d5","file":"banner-evento.jpg","url":"https://drive.google.com/…",
- "kind":"peca","medium":"fisico","source":"camera","orientation":"paisagem",
- "caption":"Banner impresso em pé no estande, logo branco sobre azul",
- "tags":["banner","evento","impresso","azul"],"has_text":true,
+{"id":"d5","file":"event-banner.jpg","url":"https://drive.google.com/…",
+ "kind":"design","medium":"physical","source":"camera","orientation":"landscape",
+ "caption":"Printed banner standing at a booth, white logo on blue",
+ "tags":["banner","event","printed","blue"],"has_text":true,
  "palette":["#052f41","#ffffff"],"hash":"…","v":1}
 ```
 
-### A taxonomia é fechada de propósito
+### The taxonomy is closed on purpose
 
-Taxonomia aberta vira poluição. São seis tipos e três materiais, e nada além:
+An open taxonomy is the noise you were trying to escape. Six types, three materials,
+nothing else:
 
 | `kind` | | `medium` | |
 |---|---|---|---|
-| `foto` | fotografia capturada | `fisico` | impresso ou objeto real |
-| `peca` | arte ou design finalizado | `digital` | arte de tela |
-| `captura` | screenshot de tela | `na` | não se aplica |
-| `grafico` | diagrama, gráfico, slide | | |
-| `logo` | marca isolada | | |
-| `outro` | nenhum acima | | |
+| `photo` | captured photograph | `physical` | printed or a real object |
+| `design` | finished artwork | `digital` | on-screen artwork |
+| `screenshot` | capture of a screen | `na` | not applicable |
+| `diagram` | chart, diagram, slide | | |
+| `logo` | isolated brand mark | | |
+| `other` | none of the above | | |
 
-Um mockup impresso é `peca` + `fisico`. Uma foto limpa para receber tipografia é
-`foto` + `has_text: false`.
+A printed mockup is `design` + `physical`. A clean photo ready to receive type is
+`photo` + `has_text: false`.
 
-## As duas faces
+## Two faces
 
-- **Claude Code** — o plugin traz um servidor MCP (`lupa_search`, `lupa_status`) que
-  sobe automaticamente. É onde a indexação acontece.
-- **Cowork, claude.ai, qualquer agente com o conector do Drive** — lê os arquivos do
-  `_lupa/` diretamente. Não executa nada, e não precisa. A skill `lupa-cowork` ensina
-  o caminho: `INDEX.md` → `by-tag/` → candidatos.
+- **Claude Code** — the plugin ships an MCP server (`lupa_search`, `lupa_status`)
+  that starts automatically. Indexing happens here.
+- **Cowork, claude.ai, any agent with the Drive connector** — reads the `_lupa/`
+  files directly. It executes nothing, and needs nothing. The `lupa-cowork` skill
+  teaches the path: `INDEX.md` → `by-tag/` → candidates.
 
-O contrato entre as faces são os arquivos. Nenhuma delas conhece a outra.
+The contract between the faces is the files. Neither knows the other exists.
 
-## Custo
+## Configuration
 
-Descrever mil imagens em lote com Flash-Lite fica na casa de **centavos**. A conta
-está em `lupa/caption.py` e aparece em todo `--dry-run` antes de você gastar.
+| Variable | Default | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | — | vision model key (required to index) |
+| `LUPA_LANG` | `en` | language of generated captions and tags (`pt`, `es`, …) |
+| `LUPA_MODEL` | `gemini-2.5-flash-lite` | model used for descriptions |
+| `LUPA_CONFIRM_ABOVE` | `200` | ask before describing more images than this |
+| `LUPA_ENV` | `~/.lupa/lupa.env` | where the settings file lives |
+| `LUPA_CONFIG` | `~/.lupa/collections.json` | saved collection registry |
+| `LUPA_INDEXES` | `~/.lupa/indexes` | local mirror of the indexes, read by the MCP |
+| `LUPA_OAUTH_CLIENT` / `LUPA_OAUTH_TOKEN` | — | Google Drive credentials |
 
-Acima de 200 imagens novas, o comando pergunta antes de prosseguir.
+Nothing here needs to be edited by hand: the first successful run registers the
+collection for you.
 
-## O que ele não faz
+## Cost
 
-Não julga se uma imagem é boa, bonita ou adequada a uma marca. Não conhece cliente,
-identidade visual nem linha editorial. Ele produz o índice; **quem tem gosto é quem
-consome o índice**. Essa fronteira é deliberada.
+Describing a thousand images in batch with Flash-Lite lands in the range of
+**cents**. The arithmetic lives in `lupa/caption.py` and shows up in every
+`--dry-run` before you spend.
 
-Também não faz busca vetorial, não indexa pasta local e nunca modifica os arquivos
-do seu acervo.
+Above 200 new images, the command asks first.
 
-## Licença
+## What it does not do
+
+It does not judge whether an image is good, beautiful, or right for a brand. It
+knows nothing about clients, visual identity, or editorial direction. It produces
+the index; **taste belongs to whoever consumes it**. That boundary is deliberate.
+
+It also does no vector search and never modifies the files in your collection.
+
+## License
 
 MIT.

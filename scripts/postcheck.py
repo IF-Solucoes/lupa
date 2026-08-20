@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Valida um índice do lupa. Sai com 1 se algo estiver quebrado.
+"""Validates a lupa index. Exits 1 when something is broken.
 
-  python3 scripts/postcheck.py exemplo/_lupa
+  python3 scripts/postcheck.py example/_lupa
 """
 import json
 import sys
@@ -9,77 +9,78 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-OBRIGATORIOS = ("id", "file", "url", "kind", "medium", "caption", "tags", "hash", "v")
-KINDS = ("foto", "peca", "captura", "grafico", "logo", "outro")
-MEDIUMS = ("fisico", "digital", "na")
+REQUIRED = ("id", "file", "url", "kind", "medium", "caption", "tags", "hash", "v")
+KINDS = ("photo", "design", "screenshot", "diagram", "logo", "other")
+MEDIUMS = ("physical", "digital", "na")
 
 
-def checar(index_dir):
+def check(index_dir):
     index_dir = Path(index_dir)
-    erros, avisos = [], []
+    errors, warnings = [], []
 
-    for nome in ("INDEX.md", "catalog.jsonl", "MANIFEST.json"):
-        if not (index_dir / nome).exists():
-            erros.append(f"falta {nome}")
-    if erros:
-        return erros, avisos
+    for name in ("INDEX.md", "catalog.jsonl", "MANIFEST.json"):
+        if not (index_dir / name).exists():
+            errors.append(f"missing {name}")
+    if errors:
+        return errors, warnings
 
-    itens, ids = [], set()
-    for numero, linha in enumerate((index_dir / "catalog.jsonl").read_text(
+    items, ids = [], set()
+    for number, line in enumerate((index_dir / "catalog.jsonl").read_text(
             encoding="utf-8").splitlines(), start=1):
-        linha = linha.strip()
-        if not linha:
+        line = line.strip()
+        if not line:
             continue
         try:
-            item = json.loads(linha)
-        except json.JSONDecodeError as erro:
-            erros.append(f"catalog.jsonl linha {numero}: JSON inválido ({erro})")
+            item = json.loads(line)
+        except json.JSONDecodeError as error:
+            errors.append(f"catalog.jsonl line {number}: invalid JSON ({error})")
             continue
 
-        faltando = [c for c in OBRIGATORIOS if c not in item]
-        if faltando:
-            erros.append(f"linha {numero}: sem {', '.join(faltando)}")
+        missing = [field for field in REQUIRED if field not in item]
+        if missing:
+            errors.append(f"line {number}: missing {', '.join(missing)}")
         if item.get("kind") not in KINDS:
-            erros.append(f"linha {numero}: kind fora da taxonomia ({item.get('kind')!r})")
+            errors.append(f"line {number}: kind outside the taxonomy ({item.get('kind')!r})")
         if item.get("medium") not in MEDIUMS:
-            erros.append(f"linha {numero}: medium fora da taxonomia ({item.get('medium')!r})")
+            errors.append(f"line {number}: medium outside the taxonomy ({item.get('medium')!r})")
         if item.get("id") in ids:
-            erros.append(f"linha {numero}: id repetido ({item.get('id')})")
+            errors.append(f"line {number}: duplicate id ({item.get('id')})")
         ids.add(item.get("id"))
         if not (item.get("caption") or "").strip():
-            avisos.append(f"linha {numero}: caption vazia ({item.get('file')})")
-        itens.append(item)
+            warnings.append(f"line {number}: empty caption ({item.get('file')})")
+        items.append(item)
 
-    manifesto = json.loads((index_dir / "MANIFEST.json").read_text(encoding="utf-8"))
-    if manifesto.get("total") != len(itens):
-        erros.append(f"MANIFEST diz {manifesto.get('total')} itens, catálogo tem {len(itens)}")
-    if set(manifesto.get("itens", {})) != ids:
-        erros.append("MANIFEST e catálogo discordam sobre quais ids existem")
+    manifest = json.loads((index_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+    if manifest.get("total") != len(items):
+        errors.append(f"MANIFEST claims {manifest.get('total')} items, "
+                      f"catalog holds {len(items)}")
+    if set(manifest.get("items", {})) != ids:
+        errors.append("MANIFEST and catalog disagree on which ids exist")
 
-    texto_index = (index_dir / "INDEX.md").read_text(encoding="utf-8").lower()
-    if "pixels" not in texto_index:
-        erros.append("INDEX.md não avisa o agente para não abrir as imagens")
+    index_text = (index_dir / "INDEX.md").read_text(encoding="utf-8").lower()
+    if "pixels" not in index_text:
+        errors.append("INDEX.md does not warn the agent against opening the images")
 
-    tags_no_catalogo = {t for i in itens for t in (i.get("tags") or [])}
-    if tags_no_catalogo and not (index_dir / "by-tag").exists():
-        erros.append("há tags no catálogo mas não existe by-tag/")
+    catalog_tags = {tag for item in items for tag in (item.get("tags") or [])}
+    if catalog_tags and not (index_dir / "by-tag").exists():
+        errors.append("the catalog has tags but there is no by-tag/ directory")
 
-    return erros, avisos
+    return errors, warnings
 
 
 def main():
-    alvo = sys.argv[1] if len(sys.argv) > 1 else "exemplo/_lupa"
-    erros, avisos = checar(alvo)
+    target = sys.argv[1] if len(sys.argv) > 1 else "example/_lupa"
+    errors, warnings = check(target)
 
-    for aviso in avisos:
-        print(f"  aviso: {aviso}")
-    if erros:
-        print(f"\nFALHOU — {len(erros)} problemas em {alvo}:")
-        for erro in erros:
-            print(f"  ✗ {erro}")
+    for warning in warnings:
+        print(f"  warning: {warning}")
+    if errors:
+        print(f"\nFAILED — {len(errors)} problems in {target}:")
+        for error in errors:
+            print(f"  ✗ {error}")
         sys.exit(1)
-    print(f"PASS — índice válido em {alvo}"
-          + (f" ({len(avisos)} avisos)" if avisos else ""))
+    print(f"PASS — index is valid at {target}"
+          + (f" ({len(warnings)} warnings)" if warnings else ""))
 
 
 if __name__ == "__main__":

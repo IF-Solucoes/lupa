@@ -1,16 +1,16 @@
-"""Linha de comando do lupa.
+"""lupa command line.
 
-  lupa index  <alvo>     indexa um acervo — o alvo é uma URL do Drive,
-  lupa update <alvo>     um id de pasta, um caminho local ou o apelido de
-                         um acervo já indexado. Os dois verbos fazem a mesma
-                         coisa: o lupa decide se é a primeira rodada ou uma
-                         atualização, olhando o índice.
+  lupa index  <target>     index a collection — the target is a Drive URL, a
+  lupa update <target>     folder id, a local path, or the name of a collection
+                           already indexed. Both verbs do the same thing: lupa
+                           reads the index and decides whether this is a first
+                           run or an update.
 
-  lupa search "<termos>" consulta
-  lupa status            o que está indexado
+  lupa search "<terms>"    query
+  lupa status              what is indexed
 
-Toda rodada passa pelo pré-flight: checagem do ambiente, plano e custo, antes
-de qualquer gasto.
+Every run goes through preflight: environment checks, plan and cost, before any
+spending.
 """
 import argparse
 import sys
@@ -18,211 +18,220 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lupa import caption, config, gemini
-from lupa.alvo import AlvoInvalido, resolver_alvo
-from lupa.guards import IndiceJaExiste, LockOcupado, precisa_confirmar_custo
-from lupa.mcp import Servidor
-from lupa.pipeline import rodar
-from lupa.preflight import diagnosticar, formatar, tem_bloqueio
+from lupa.guards import IndexAlreadyExists, LockBusy, needs_cost_confirmation
+from lupa.mcp import Server
+from lupa.pipeline import run as run_pipeline
+from lupa.preflight import diagnose, format_report, has_blocker
+from lupa.target import InvalidTarget, resolve_target
 
-PASTA_INDICE = "_lupa"
+INDEX_FOLDER = "_lupa"
 
 
-def agora_iso():
+def utc_stamp():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
 
 
-def resolver_entrada(entrada, cfg):
-    """Apelido cadastrado primeiro; depois URL, id ou caminho."""
-    cadastrado = config.achar_acervo(cfg, str(entrada).strip())
-    if cadastrado:
-        return config.alvo_de_cadastro(cadastrado)
-    return resolver_alvo(entrada)
+def resolve_entry(entry, registry):
+    """A registered name first; then a URL, an id, or a path."""
+    known = config.find_collection(registry, str(entry).strip())
+    if known:
+        return config.target_from_registry(known)
+    return resolve_target(entry)
 
 
-def montar_fonte(alvo, env, cache):
-    """Devolve (fonte, servico). O serviço só existe quando o alvo é o Drive."""
-    if alvo.tipo == "local":
-        from lupa.fonte_local import FonteLocal
-        return FonteLocal(alvo.caminho), None
+def build_source(target, env, cache):
+    """Returns (source, service). The service exists only for Drive targets."""
+    if target.kind == "local":
+        from lupa.local_source import LocalSource
+        return LocalSource(target.path), None
 
-    from lupa.drive import baixar, conectar, listar_imagens
+    from lupa.drive import connect, download, list_images
+    from lupa.image import mime_of
 
-    servico = conectar(env.get("LUPA_OAUTH_CLIENT"), env.get("LUPA_OAUTH_TOKEN"))
+    service = connect(env.get("LUPA_OAUTH_CLIENT"), env.get("LUPA_OAUTH_TOKEN"))
 
-    class FonteDrive:
-        def listar(self):
-            return listar_imagens(servico, alvo.folder_id)
+    class DriveSource:
+        def list(self):
+            return list_images(service, target.folder_id)
 
-        def baixar(self, file_id):
-            destino = Path(cache) / file_id
-            if not destino.exists():
-                baixar(servico, file_id, destino)
-            dados = destino.read_bytes()
-            from lupa.imagem import mime_de
-            return dados, mime_de(dados, file_id)
+        def fetch(self, file_id):
+            local = Path(cache) / file_id
+            if not local.exists():
+                download(service, file_id, local)
+            data = local.read_bytes()
+            return data, mime_of(data, file_id)
 
-    return FonteDrive(), servico
+    return DriveSource(), service
 
 
-def descritor(api_key, modelo):
-    def descrever(item, imagem, mime):
+def make_describer(api_key, model, language):
+    def describe(item, image, mime):
         from lupa.classify import classify
         meta = {**item, **classify(item)}
-        return gemini.descrever(api_key, caption.montar_prompt(meta), imagem, mime, modelo)
-    return descrever
+        prompt = caption.build_prompt(meta, language=language)
+        return gemini.describe(api_key, prompt, image, mime, model)
+    return describe
 
 
-def comando_indexar(args):
-    env = config.ambiente()
-    cfg = config.ler_config()
+def command_index(args):
+    env = config.environment()
+    registry = config.read_config(file_env=env)
 
     try:
-        alvo = resolver_entrada(args.alvo, cfg)
-    except AlvoInvalido as erro:
-        sys.exit(f"\n{erro}\n")
+        target = resolve_entry(args.target, registry)
+    except InvalidTarget as error:
+        sys.exit(f"\n{error}\n")
 
-    raiz = config.resolver_raiz_indices({}, env)
+    root = config.resolve_index_root({}, env)
 
-    # Se dá para perguntar ao Drive como a pasta se chama, o apelido sai de lá —
-    # ninguém merece um acervo chamado "15fvulcdmebag7t2tmwuz5kcdd4xf3eah".
-    if alvo.tipo == "drive" and Path(str(env.get("LUPA_OAUTH_CLIENT") or "")).expanduser().exists():
+    # When Drive can be asked what the folder is called, the name comes from
+    # there — nobody deserves a collection named "15fvulcdmebag7t2tm".
+    client = env.get("LUPA_OAUTH_CLIENT")
+    if target.kind == "drive" and client and Path(client).expanduser().exists():
         try:
-            from lupa.alvo import _apelidar
-            from lupa.drive import conectar, nome_da_pasta
-            servico_previo = conectar(env.get("LUPA_OAUTH_CLIENT"), env.get("LUPA_OAUTH_TOKEN"))
-            alvo.nome = _apelidar(nome_da_pasta(servico_previo, alvo.folder_id))
+            from lupa.drive import connect, folder_name
+            from lupa.target import slugify
+            probe = connect(client, env.get("LUPA_OAUTH_TOKEN"))
+            target.name = slugify(folder_name(probe, target.folder_id))
         except Exception:
-            pass  # sem rede ou sem permissão: seguimos com o apelido do id
+            pass  # no network or no permission: keep the id-derived name
 
-    index_dir = raiz / alvo.nome
-    indice_existe = (index_dir / "MANIFEST.json").exists()
+    index_dir = root / target.name
+    index_exists = (index_dir / "MANIFEST.json").exists()
 
-    # --- PRÉ-FLIGHT: sempre, sem exceção ---
-    checagens = diagnosticar(alvo, env, arquivos_existentes=None, indice_existe=indice_existe)
+    # --- PREFLIGHT: always, no exceptions ---
+    checks = diagnose(target, env, existing_files=None, index_exists=index_exists)
     print()
-    print(formatar(checagens, alvo))
-    print()
-
-    if tem_bloqueio(checagens):
-        sys.exit("Resolva os itens marcados com ✗ e rode de novo. Nada foi gasto.\n")
-
-    fonte, servico = montar_fonte(alvo, env, raiz / ".cache" / alvo.nome)
-
-    plano = rodar(acervo=alvo.nome, index_dir=index_dir, fonte=fonte,
-                  descrever=lambda *a: {}, modo="update", agora=agora_iso(), dry_run=True)
-    p = plano["plano"]
-    quantas = len(p.a_descrever)
-
-    print("Plano desta rodada")
-    print(f"  {p.resumo()}")
-    print(f"  imagens a descrever: {quantas}")
-    print(f"  custo estimado: {caption.formatar_custo(plano['custo_estimado'])}")
+    print(format_report(checks, target))
     print()
 
-    if p.vazio:
-        print("Nada mudou desde a última rodada. Nada a fazer, nada a pagar.\n")
+    if has_blocker(checks):
+        sys.exit("Fix the items marked ✗ and run again. Nothing was spent.\n")
+
+    source, service = build_source(target, env, root / ".cache" / target.name)
+
+    preview = run_pipeline(collection=target.name, index_dir=index_dir, source=source,
+                           describe=lambda *a: {}, mode="update", now=utc_stamp(),
+                           dry_run=True)
+    plan = preview["plan"]
+    pending = len(plan.to_describe)
+
+    print("Plan for this run")
+    print(f"  {plan.summary()}")
+    print(f"  images to describe: {pending}")
+    print(f"  estimated cost: {caption.format_cost(preview['estimated_cost'])}")
+    print()
+
+    if plan.empty:
+        print("Nothing changed since the last run. Nothing to do, nothing to pay.\n")
         return
 
     if args.dry_run:
-        print("(--dry-run: parando aqui, nada foi escrito)\n")
+        print("(--dry-run: stopping here, nothing was written)\n")
         return
 
-    teto = int(env.get("LUPA_CONFIRM_ABOVE") or 200)
-    precisa = precisa_confirmar_custo(quantas, teto) or sys.stdin.isatty()
-    if precisa and not args.yes:
+    ceiling = int(env.get("LUPA_CONFIRM_ABOVE") or 200)
+    must_ask = needs_cost_confirmation(pending, ceiling) or sys.stdin.isatty()
+    if must_ask and not args.yes:
         if not sys.stdin.isatty():
-            sys.exit(f"São {quantas} imagens, acima do teto de {teto}. "
-                     "Rode com --yes para confirmar sem interação.\n")
-        if input("Prosseguir? [s/N] ").strip().lower() not in ("s", "sim", "y", "yes"):
-            sys.exit("cancelado. nada foi gasto.\n")
+            sys.exit(f"That is {pending} images, above the ceiling of {ceiling}. "
+                     "Pass --yes to confirm without interaction.\n")
+        if input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            sys.exit("cancelled. nothing was spent.\n")
 
-    resultado = rodar(
-        acervo=alvo.nome, index_dir=index_dir, fonte=fonte,
-        descrever=descritor(env.get("GEMINI_API_KEY"),
-                            env.get("LUPA_MODEL") or gemini.MODELO_PADRAO),
-        modo="index" if args.rebuild else "update", agora=agora_iso(),
-        rebuild=args.rebuild, confirm=args.confirm)
+    model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
+    result = run_pipeline(
+        collection=target.name, index_dir=index_dir, source=source,
+        describe=make_describer(env.get("GEMINI_API_KEY"), model,
+                                env.get("LUPA_LANG") or caption.DEFAULT_LANGUAGE),
+        mode="index" if args.rebuild else "update", now=utc_stamp(),
+        rebuild=args.rebuild, confirm=args.confirm, model=model)
 
     print()
-    print(f"Pronto. {resultado['plano'].resumo()}")
-    print(f"  índice local: {index_dir}")
-    if resultado["falhas"]:
-        print(f"  {len(resultado['falhas'])} imagens falharam — veja runs/*.errors.jsonl")
+    print(f"Done. {result['plan'].summary()}")
+    print(f"  local index: {index_dir}")
+    if result["failures"]:
+        print(f"  {len(result['failures'])} images failed — see runs/*.errors.jsonl")
 
-    config.gravar_config(config.registrar_acervo(cfg, alvo))
-    print(f'  acervo salvo como "{alvo.nome}" — da próxima vez basta o apelido')
+    config.write_config(config.register_collection(registry, target), file_env=env)
+    print(f'  saved as "{target.name}" — next time the name alone is enough')
 
-    if servico and not args.no_push:
-        _publicar(servico, alvo.folder_id, index_dir)
+    if service and not args.no_push:
+        _publish(service, target.folder_id, index_dir)
 
 
-def _publicar(servico, folder_id, index_dir):
-    """Publica o índice dentro do acervo, para quem só tem o conector do Drive."""
-    from lupa.drive import enviar_arquivo, garantir_pasta
-    raiz = garantir_pasta(servico, folder_id, PASTA_INDICE)
-    enviados = 0
-    for arquivo in sorted(Path(index_dir).rglob("*")):
-        if arquivo.is_dir() or ".backup" in arquivo.parts or arquivo.name == ".lock":
+def _publish(service, folder_id, index_dir):
+    """Publishes the index inside the collection, for clients that only have the connector."""
+    from lupa.drive import ensure_folder, upload_file
+    root = ensure_folder(service, folder_id, INDEX_FOLDER)
+    uploaded = 0
+    for entry in sorted(Path(index_dir).rglob("*")):
+        if entry.is_dir() or ".backup" in entry.parts or entry.name == ".lock":
             continue
-        relativo = arquivo.relative_to(index_dir)
-        pasta = raiz
-        for parte in relativo.parts[:-1]:
-            pasta = garantir_pasta(servico, pasta, parte)
-        enviar_arquivo(servico, pasta, arquivo)
-        enviados += 1
-    print(f"  publicado no Drive: {enviados} arquivos em {PASTA_INDICE}/")
+        relative = entry.relative_to(index_dir)
+        folder = root
+        for part in relative.parts[:-1]:
+            folder = ensure_folder(service, folder, part)
+        upload_file(service, folder, entry)
+        uploaded += 1
+    print(f"  published to Drive: {uploaded} files under {INDEX_FOLDER}/")
 
 
-def comando_buscar(args):
-    env = config.ambiente()
-    servidor = Servidor(config.resolver_raiz_indices({}, env))
-    filtros = {c: getattr(args, c) for c in ("kind", "medium", "orientation")
-               if getattr(args, c, None)}
-    print(servidor.ferramenta_search({"consulta": args.consulta, "acervo": args.acervo,
-                                      "limite": args.limite, **filtros}))
+def command_search(args):
+    env = config.environment()
+    server = Server(config.resolve_index_root({}, env))
+    filters = {key: getattr(args, key) for key in ("kind", "medium", "orientation")
+               if getattr(args, key, None)}
+    print(server.tool_search({"query": args.query, "collection": args.collection,
+                              "limit": args.limit, **filters}))
 
 
-def comando_status(_args):
-    env = config.ambiente()
-    print(Servidor(config.resolver_raiz_indices({}, env)).ferramenta_status({}))
+def command_status(_args):
+    env = config.environment()
+    print(Server(config.resolve_index_root({}, env)).tool_status({}))
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="lupa", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = p.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(
+        prog="lupa", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    for verbo in ("index", "update"):
-        c = sub.add_parser(verbo, help="indexa ou atualiza um acervo (o lupa decide qual)")
-        c.add_argument("alvo", help="URL do Drive, id de pasta, caminho local ou apelido")
-        c.add_argument("--dry-run", action="store_true", help="para depois do plano")
-        c.add_argument("--yes", "-y", action="store_true", help="não pergunta")
-        c.add_argument("--no-push", action="store_true", help="não publica o índice no Drive")
-        c.add_argument("--rebuild", action="store_true", help="refaz do zero (exige --confirm)")
-        c.add_argument("--confirm", help="apelido do acervo, digitado, para liberar o --rebuild")
+    for verb in ("index", "update"):
+        entry = sub.add_parser(verb, help="index or update a collection (lupa decides which)")
+        entry.add_argument("target",
+                           help="Drive URL, folder id, local path, or a saved name")
+        entry.add_argument("--dry-run", action="store_true", help="stop after the plan")
+        entry.add_argument("--yes", "-y", action="store_true", help="do not ask")
+        entry.add_argument("--no-push", action="store_true",
+                           help="do not publish the index to Drive")
+        entry.add_argument("--rebuild", action="store_true",
+                           help="rebuild from scratch (requires --confirm)")
+        entry.add_argument("--confirm",
+                           help="the collection name, typed, to unlock --rebuild")
 
-    b = sub.add_parser("search", help="consulta o índice")
-    b.add_argument("consulta")
-    b.add_argument("--acervo")
-    b.add_argument("--kind", choices=caption.KINDS)
-    b.add_argument("--medium", choices=caption.MEDIUMS)
-    b.add_argument("--orientation", choices=("retrato", "paisagem", "quadrado"))
-    b.add_argument("--limite", type=int, default=15)
+    finder = sub.add_parser("search", help="query the index")
+    finder.add_argument("query")
+    finder.add_argument("--collection")
+    finder.add_argument("--kind", choices=caption.KINDS)
+    finder.add_argument("--medium", choices=caption.MEDIUMS)
+    finder.add_argument("--orientation", choices=("portrait", "landscape", "square"))
+    finder.add_argument("--limit", type=int, default=15)
 
-    sub.add_parser("status", help="acervos indexados")
+    sub.add_parser("status", help="indexed collections")
 
-    args = p.parse_args(argv)
+    args = parser.parse_args(argv)
     try:
-        if args.cmd in ("index", "update"):
-            comando_indexar(args)
-        elif args.cmd == "search":
-            comando_buscar(args)
+        if args.command in ("index", "update"):
+            command_index(args)
+        elif args.command == "search":
+            command_search(args)
         else:
-            comando_status(args)
-    except IndiceJaExiste as erro:
-        sys.exit(f"\n✋ {erro}\n")
-    except LockOcupado as erro:
-        sys.exit(f"\n⏳ {erro}\n")
+            command_status(args)
+    except IndexAlreadyExists as error:
+        sys.exit(f"\n✋ {error}\n")
+    except LockBusy as error:
+        sys.exit(f"\n⏳ {error}\n")
 
 
 if __name__ == "__main__":

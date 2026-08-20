@@ -1,35 +1,35 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IF-Solucoes/lupa/schema/index-v1.json",
-  "title": "lupa · linha do catalog.jsonl (v1)",
+  "title": "lupa · catalog.jsonl line (v1)",
   "type": "object",
   "required": ["id", "file", "url", "kind", "medium", "caption", "tags", "hash", "v"],
   "additionalProperties": true,
   "properties": {
-    "id": {"type": "string", "description": "id do arquivo no Google Drive"},
-    "file": {"type": "string", "description": "nome do arquivo"},
-    "url": {"type": "string", "description": "link de visualização"},
+    "id": {"type": "string", "description": "Google Drive file id, or the relative path for a local collection"},
+    "file": {"type": "string", "description": "file name"},
+    "url": {"type": "string", "description": "link to view the file"},
     "w": {"type": "integer"}, "h": {"type": "integer"},
     "aspect": {"type": "string", "examples": ["4:5", "9:16", "3:2"]},
-    "orientation": {"enum": ["retrato", "paisagem", "quadrado"]},
+    "orientation": {"enum": ["portrait", "landscape", "square"]},
     "kind": {
-      "enum": ["foto", "peca", "captura", "grafico", "logo", "outro"],
-      "description": "foto=capturada · peca=arte finalizada · captura=screenshot · grafico=diagrama · logo=marca isolada"
+      "enum": ["photo", "design", "screenshot", "diagram", "logo", "other"],
+      "description": "photo=captured · design=finished artwork · screenshot=screen capture · diagram=chart or slide · logo=isolated brand mark"
     },
     "medium": {
-      "enum": ["fisico", "digital", "na"],
-      "description": "fisico=impresso ou objeto real · digital=arte de tela · na=não se aplica. Mockup impresso = peca + fisico."
+      "enum": ["physical", "digital", "na"],
+      "description": "physical=printed material or a real object · digital=on-screen artwork · na=not applicable. A printed mockup is design + physical."
     },
-    "source": {"enum": ["camera", "gerado"], "description": "deduzido do EXIF"},
-    "caption": {"type": "string", "description": "uma frase objetiva, escrita pelo modelo de visão"},
+    "source": {"enum": ["camera", "generated"], "description": "inferred from EXIF"},
+    "caption": {"type": "string", "description": "one factual sentence, written by the vision model"},
     "tags": {"type": "array", "items": {"type": "string"}},
-    "scene": {"enum": ["interior", "exterior", "na"]},
+    "scene": {"enum": ["indoor", "outdoor", "na"]},
     "people": {"type": "integer", "minimum": 0},
-    "palette": {"type": "array", "items": {"type": "string"}, "description": "cores dominantes em hexadecimal"},
-    "has_text": {"type": "boolean", "description": "há texto embutido na imagem"},
-    "text": {"type": "string", "description": "OCR — vem pronto do Google Drive, não custa token"},
-    "labels": {"type": "array", "items": {"type": "string"}, "description": "labels crus do Google; ruidosos, guardados sem confiança"},
-    "hash": {"type": "string", "description": "md5 do arquivo; é o que torna a atualização incremental"},
+    "palette": {"type": "array", "items": {"type": "string"}, "description": "dominant colors as hex codes"},
+    "has_text": {"type": "boolean", "description": "the image has text baked into it"},
+    "text": {"type": "string", "description": "OCR — comes free from Google Drive, costs no tokens"},
+    "labels": {"type": "array", "items": {"type": "string"}, "description": "raw Google labels; noisy, stored without trust"},
+    "hash": {"type": "string", "description": "file checksum; this is what makes updates incremental"},
     "v": {"type": "integer", "const": 1}
   }
 }

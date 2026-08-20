@@ -1,60 +1,59 @@
-"""Reconciliação incremental: o que mudou desde a última rodada."""
+"""Incremental reconciliation: what changed since the last run."""
 import unittest
 from lupa.reconcile import reconcile
 
 
-def remoto(*pares):
-    return [{"id": i, "hash": h, "name": f"{i}.png"} for i, h in pares]
+def remote(*pairs):
+    return [{"id": i, "hash": h, "name": f"{i}.png"} for i, h in pairs]
 
 
-def manifesto(*pares):
-    return {"itens": {i: {"hash": h} for i, h in pares}}
+def manifest(*pairs):
+    return {"items": {i: {"hash": h} for i, h in pairs}}
 
 
 class TestReconcile(unittest.TestCase):
-    def test_acervo_novo_e_tudo_novo(self):
-        p = reconcile(remoto(("a", "1"), ("b", "2")), {"itens": {}})
-        self.assertEqual(sorted(p.novas), ["a", "b"])
-        self.assertEqual(p.alteradas, [])
-        self.assertEqual(p.sumidas, [])
+    def test_a_new_collection_is_all_new(self):
+        p = reconcile(remote(("a", "1"), ("b", "2")), {"items": {}})
+        self.assertEqual(sorted(p.added), ["a", "b"])
+        self.assertEqual(p.changed, [])
+        self.assertEqual(p.removed, [])
 
-    def test_sem_mudanca_nao_ha_nada_a_fazer(self):
-        r, m = remoto(("a", "1"), ("b", "2")), manifesto(("a", "1"), ("b", "2"))
-        p = reconcile(r, m)
-        self.assertEqual(sorted(p.intactas), ["a", "b"])
-        self.assertEqual(p.a_descrever, [])
-        self.assertTrue(p.vazio)
+    def test_no_change_means_nothing_to_do(self):
+        p = reconcile(remote(("a", "1"), ("b", "2")), manifest(("a", "1"), ("b", "2")))
+        self.assertEqual(sorted(p.unchanged), ["a", "b"])
+        self.assertEqual(p.to_describe, [])
+        self.assertTrue(p.empty)
 
-    def test_arquivo_novo_entra_sozinho(self):
-        p = reconcile(remoto(("a", "1"), ("b", "2")), manifesto(("a", "1")))
-        self.assertEqual(p.novas, ["b"])
-        self.assertEqual(p.intactas, ["a"])
+    def test_a_new_file_comes_in_alone(self):
+        p = reconcile(remote(("a", "1"), ("b", "2")), manifest(("a", "1")))
+        self.assertEqual(p.added, ["b"])
+        self.assertEqual(p.unchanged, ["a"])
 
-    def test_hash_diferente_marca_como_alterada(self):
-        p = reconcile(remoto(("a", "9")), manifesto(("a", "1")))
-        self.assertEqual(p.alteradas, ["a"])
-        self.assertEqual(p.novas, [])
+    def test_a_different_hash_marks_the_file_as_changed(self):
+        p = reconcile(remote(("a", "9")), manifest(("a", "1")))
+        self.assertEqual(p.changed, ["a"])
+        self.assertEqual(p.added, [])
 
-    def test_arquivo_ausente_no_drive_e_removido(self):
-        p = reconcile(remoto(("a", "1")), manifesto(("a", "1"), ("z", "8")))
-        self.assertEqual(p.sumidas, ["z"])
+    def test_a_file_missing_from_drive_is_removed(self):
+        p = reconcile(remote(("a", "1")), manifest(("a", "1"), ("z", "8")))
+        self.assertEqual(p.removed, ["z"])
 
-    def test_arquivo_na_lixeira_conta_como_sumido(self):
+    def test_a_trashed_file_counts_as_removed(self):
         r = [{"id": "a", "hash": "1", "name": "a.png", "trashed": True}]
-        p = reconcile(r, manifesto(("a", "1")))
-        self.assertEqual(p.sumidas, ["a"])
-        self.assertEqual(p.intactas, [])
+        p = reconcile(r, manifest(("a", "1")))
+        self.assertEqual(p.removed, ["a"])
+        self.assertEqual(p.unchanged, [])
 
-    def test_a_descrever_junta_novas_e_alteradas(self):
-        p = reconcile(remoto(("a", "9"), ("b", "2")), manifesto(("a", "1")))
-        self.assertEqual(sorted(p.a_descrever), ["a", "b"])
-        self.assertFalse(p.vazio)
+    def test_to_describe_joins_added_and_changed(self):
+        p = reconcile(remote(("a", "9"), ("b", "2")), manifest(("a", "1")))
+        self.assertEqual(sorted(p.to_describe), ["a", "b"])
+        self.assertFalse(p.empty)
 
-    def test_remocao_sozinha_nao_e_rodada_vazia(self):
-        # nada a descrever, mas o catálogo precisa ser reescrito
-        p = reconcile(remoto(("a", "1")), manifesto(("a", "1"), ("z", "8")))
-        self.assertEqual(p.a_descrever, [])
-        self.assertFalse(p.vazio)
+    def test_a_removal_alone_is_not_an_empty_run(self):
+        # nothing to describe, but the catalog still has to be rewritten
+        p = reconcile(remote(("a", "1")), manifest(("a", "1"), ("z", "8")))
+        self.assertEqual(p.to_describe, [])
+        self.assertFalse(p.empty)
 
 
 if __name__ == "__main__":

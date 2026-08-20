@@ -1,101 +1,109 @@
-"""Descrição por modelo de visão.
+"""Vision-model description.
 
-O modelo só é perguntado sobre o que o metadado não resolveu. Ele nunca
-transcreve texto (o Drive já fez OCR de graça) nem redefine o que já se sabe.
+The model is asked only about what metadata could not settle. It never
+transcribes text (Drive already did OCR for free) and never overrides what is
+already known.
 """
 import json
 import re
 
-KINDS = ("foto", "peca", "captura", "grafico", "logo", "outro")
-MEDIUMS = ("fisico", "digital", "na")
+KINDS = ("photo", "design", "screenshot", "diagram", "logo", "other")
+MEDIUMS = ("physical", "digital", "na")
 
-# Gemini 2.5 Flash-Lite, preço por 1M de tokens. Batch corta 50%.
-PRECO_ENTRADA = 0.10
-PRECO_SAIDA = 0.40
-TOKENS_ENTRADA_POR_IMAGEM = 600   # miniatura de 768px + prompt
-TOKENS_SAIDA_POR_IMAGEM = 200
+DEFAULT_LANGUAGE = "en"
+LANGUAGE_NAMES = {"en": "English", "pt": "Brazilian Portuguese", "es": "Spanish",
+                  "fr": "French", "de": "German", "it": "Italian"}
+
+# Gemini 2.5 Flash-Lite, price per 1M tokens. Batch mode halves it.
+INPUT_PRICE = 0.10
+OUTPUT_PRICE = 0.40
+INPUT_TOKENS_PER_IMAGE = 600   # 768px thumbnail plus prompt
+OUTPUT_TOKENS_PER_IMAGE = 200
 
 
-class RespostaInvalida(Exception):
+class InvalidResponse(Exception):
     pass
 
 
-def montar_prompt(meta):
-    """Pergunta só o que falta. Prompt curto é prompt barato."""
-    linhas = [
-        "Você cataloga imagens para um acervo de referências visuais.",
-        "Responda APENAS um objeto JSON, sem comentários e sem cercas de código.",
+def build_prompt(meta, language=DEFAULT_LANGUAGE):
+    """Asks only for what is missing. A short prompt is a cheap prompt."""
+    language_name = LANGUAGE_NAMES.get(language, language)
+
+    lines = [
+        "You catalog images for a visual reference library.",
+        "Reply with a single JSON object, no commentary and no code fences.",
+        f"Write caption and tags in {language_name}.",
         "",
-        "Campos obrigatórios:",
-        '  "caption": uma frase objetiva descrevendo a imagem (máx. 20 palavras).',
-        '  "tags": 3 a 8 termos curtos em português, minúsculos, sem acento.',
-        '  "scene": "interior", "exterior" ou "na".',
-        '  "people": número de pessoas visíveis (0 se nenhuma).',
-        '  "palette": 2 a 4 cores dominantes em hexadecimal.',
+        "Required fields:",
+        '  "caption": one factual sentence describing the image (20 words max).',
+        '  "tags": 3 to 8 short lowercase terms.',
+        '  "scene": "indoor", "outdoor" or "na".',
+        '  "people": number of visible people (0 if none).',
+        '  "palette": 2 to 4 dominant colors as hex codes.',
     ]
 
-    # Só perguntamos o tipo quando o metadado não decidiu sozinho.
+    # The kind is only asked about when metadata could not settle it.
     if meta.get("kind") is None:
-        linhas += [
-            f'  "kind": um de {list(KINDS)}.',
-            '     foto = fotografia capturada · peca = arte/design finalizado',
-            '     captura = screenshot de tela · grafico = diagrama ou slide',
-            '     logo = marca isolada · outro = nenhum acima',
-            f'  "medium": um de {list(MEDIUMS)}.',
-            '     fisico = material impresso ou objeto real fotografado',
-            '     digital = arte de tela · na = não se aplica',
+        lines += [
+            f'  "kind": one of {list(KINDS)}.',
+            "     photo = captured photograph · design = finished artwork",
+            "     screenshot = capture of a screen · diagram = chart or slide",
+            "     logo = isolated brand mark · other = none of the above",
+            f'  "medium": one of {list(MEDIUMS)}.',
+            "     physical = printed material or a real object photographed",
+            "     digital = on-screen artwork · na = not applicable",
         ]
 
-    linhas += [
+    lines += [
         "",
-        "NÃO transcreva o texto da imagem — ele já foi extraído.",
-        "Descreva composição, luz, cores e estilo. Seja concreto, não poético.",
+        "Do NOT transcribe the text in the image — it has already been extracted.",
+        "Describe composition, light, color and style. Be concrete, not poetic.",
     ]
-    return "\n".join(linhas)
+    return "\n".join(lines)
 
 
-def parse_resposta(texto):
-    """Extrai o JSON da resposta, tolerando cercas de código e conversa em volta."""
-    if not texto:
-        raise RespostaInvalida("resposta vazia do modelo")
+def parse_response(text):
+    """Extracts the JSON from the reply, tolerating code fences and chatter."""
+    if not text:
+        raise InvalidResponse("empty response from the model")
 
-    limpo = re.sub(r"```(?:json)?|```", "", str(texto)).strip()
+    cleaned = re.sub(r"```(?:json)?|```", "", str(text)).strip()
     try:
-        return json.loads(limpo)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    inicio, fim = limpo.find("{"), limpo.rfind("}")
-    if inicio == -1 or fim <= inicio:
-        raise RespostaInvalida(f"nenhum JSON na resposta: {limpo[:120]!r}")
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        raise InvalidResponse(f"no JSON in the response: {cleaned[:120]!r}")
     try:
-        return json.loads(limpo[inicio:fim + 1])
-    except json.JSONDecodeError as erro:
-        raise RespostaInvalida(f"JSON malformado: {erro}") from erro
+        return json.loads(cleaned[start:end + 1])
+    except json.JSONDecodeError as error:
+        raise InvalidResponse(f"malformed JSON: {error}") from error
 
 
-def _limpar_tags(brutas):
-    vistas, saida = set(), []
-    for tag in brutas or []:
-        limpa = str(tag).strip().lower()
-        if limpa and limpa not in vistas:
-            vistas.add(limpa)
-            saida.append(limpa)
-    return saida
+def _clean_tags(raw):
+    seen, out = set(), []
+    for tag in raw or []:
+        cleaned = str(tag).strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
 
 
-def mesclar(meta, vlm):
-    """Funde metadado e modelo. O metadado vence sempre que já tinha resposta."""
-    vlm = vlm or {}
+def merge(meta, vision):
+    """Fuses metadata and model output. Metadata wins wherever it had an answer."""
+    vision = vision or {}
 
     kind = meta.get("kind")
     if kind is None:
-        kind = vlm.get("kind")
-        kind = kind if kind in KINDS else "outro"
+        kind = vision.get("kind")
+        kind = kind if kind in KINDS else "other"
 
     medium = meta.get("medium")
     if medium is None:
-        medium = vlm.get("medium")
+        medium = vision.get("medium")
         medium = medium if medium in MEDIUMS else "na"
 
     return {
@@ -105,32 +113,32 @@ def mesclar(meta, vlm):
         "w": meta.get("w"), "h": meta.get("h"),
         "aspect": meta.get("aspect"), "orientation": meta.get("orientation"),
         "kind": kind, "medium": medium, "source": meta.get("source"),
-        "caption": str(vlm.get("caption") or ""),
-        "tags": _limpar_tags(vlm.get("tags")),
-        "scene": vlm.get("scene") or "na",
-        "people": int(vlm.get("people") or 0),
-        "palette": list(vlm.get("palette") or []),
+        "caption": str(vision.get("caption") or ""),
+        "tags": _clean_tags(vision.get("tags")),
+        "scene": vision.get("scene") or "na",
+        "people": int(vision.get("people") or 0),
+        "palette": list(vision.get("palette") or []),
         "has_text": bool(meta.get("has_text")),
-        "text": meta.get("ocr_text") or "",       # OCR do Drive, de graça
-        "labels": list(meta.get("labels") or []),  # labels crus do Google
+        "text": meta.get("ocr_text") or "",       # OCR from Drive, free
+        "labels": list(meta.get("labels") or []),  # raw Google labels
         "hash": meta.get("hash"),
     }
 
 
-def estimar_custo(quantidade, batch=True):
-    """Custo aproximado em dólares. Serve ao aviso antes de gastar, não à contabilidade."""
-    if quantidade <= 0:
+def estimate_cost(count, batch=True):
+    """Approximate dollar cost. It serves the warning before spending, not accounting."""
+    if count <= 0:
         return 0.0
-    entrada = quantidade * TOKENS_ENTRADA_POR_IMAGEM / 1_000_000 * PRECO_ENTRADA
-    saida = quantidade * TOKENS_SAIDA_POR_IMAGEM / 1_000_000 * PRECO_SAIDA
-    total = entrada + saida
+    inbound = count * INPUT_TOKENS_PER_IMAGE / 1_000_000 * INPUT_PRICE
+    outbound = count * OUTPUT_TOKENS_PER_IMAGE / 1_000_000 * OUTPUT_PRICE
+    total = inbound + outbound
     return round(total * (0.5 if batch else 1.0), 6)
 
 
-def formatar_custo(valor):
-    """Custo para ler, não para contabilizar. Centavo de dólar não merece 6 casas."""
-    if not valor:
+def format_cost(value):
+    """Cost to read, not to audit. A fraction of a cent needs no six decimals."""
+    if not value:
         return "US$ 0.00"
-    if valor < 0.01:
-        return "menos de US$ 0.01"
-    return f"US$ {valor:.2f}"
+    if value < 0.01:
+        return "under US$ 0.01"
+    return f"US$ {value:.2f}"

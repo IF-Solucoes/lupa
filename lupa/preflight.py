@@ -1,122 +1,123 @@
-"""Pré-flight: antes de qualquer rodada, diga à pessoa o que vai acontecer.
+"""Preflight: before any run, tell the person what is about to happen.
 
-Ele não é opcional e não é uma flag. Toda execução passa por aqui: checa o
-ambiente, explica o que falta e como resolver, e só então mostra o plano e o
-custo. Quem chama o lupa não precisa saber de credencial, de folder_id nem de
-qual verbo usar — o pré-flight resolve isso.
+It is not optional and not a flag. Every execution goes through it: check the
+environment, explain what is missing and how to fix it, then show the plan and the
+cost. Whoever calls lupa needs to know nothing about credentials, folder ids, or
+which verb to use — preflight settles that.
 """
 from dataclasses import dataclass
 from pathlib import Path
 
-from lupa.montagem import parece_drive_montado
+from lupa.mount import looks_like_mounted_drive
 
 OK = "ok"
-AVISO = "aviso"
-BLOQUEIO = "bloqueio"
+WARNING = "warning"
+BLOCKER = "blocker"
 
-SIMBOLO = {OK: "✓", AVISO: "!", BLOQUEIO: "✗"}
+SYMBOL = {OK: "✓", WARNING: "!", BLOCKER: "✗"}
 
 
 @dataclass
-class Checagem:
-    nome: str
+class Check:
+    name: str
     status: str
-    mensagem: str
-    como_resolver: str = ""
+    message: str
+    how_to_fix: str = ""
 
 
-def tem_bloqueio(checagens):
-    return any(c.status == BLOQUEIO for c in checagens)
+def has_blocker(checks):
+    return any(check.status == BLOCKER for check in checks)
 
 
-def _existe(caminho, existentes):
-    if not caminho:
+def _exists(path, known):
+    if not path:
         return False
-    if existentes is not None:
-        return str(caminho) in existentes
-    return Path(str(caminho)).expanduser().exists()
+    if known is not None:
+        return str(path) in known
+    return Path(str(path)).expanduser().exists()
 
 
-def diagnosticar(alvo, env, arquivos_existentes=None, indice_existe=False):
-    """Devolve a lista de checagens, em ordem de leitura."""
-    checagens = []
+def diagnose(target, env, existing_files=None, index_exists=False):
+    """Returns the checks, in reading order."""
+    checks = []
 
-    # 1. O acervo
-    if alvo.tipo == "drive":
-        checagens.append(Checagem(
-            "acervo", OK,
-            f'pasta do Google Drive · id {alvo.folder_id} · apelido "{alvo.nome}"'))
-        checagens.append(Checagem("origem do acervo", OK,
-                                  "pela API do Drive — com OCR e link compartilhável"))
+    # 1. The collection
+    if target.kind == "drive":
+        checks.append(Check(
+            "collection", OK,
+            f'Google Drive folder · id {target.folder_id} · named "{target.name}"'))
+        checks.append(Check("collection source", OK,
+                            "through the Drive API — with OCR and shareable links"))
     else:
-        checagens.append(Checagem(
-            "acervo", OK, f'pasta local {alvo.caminho} · apelido "{alvo.nome}"'))
+        checks.append(Check(
+            "collection", OK, f'local folder {target.path} · named "{target.name}"'))
 
-        if parece_drive_montado(alvo.caminho):
-            checagens.append(Checagem(
-                "origem do acervo", AVISO,
-                "esta pasta parece ser o Google Drive montado no disco",
-                "Funciona assim mesmo. Mas se você colar a URL da pasta no Drive "
-                "(.../drive/folders/<id>), o lupa ganha três coisas de graça:\n"
-                "      · o OCR do texto das imagens, que o Google já fez — sem isso, "
-                "o texto embutido nas peças não entra na busca\n"
-                "      · links https compartilháveis, que o Cowork e outras pessoas abrem\n"
-                "      · o id imutável de cada arquivo: renomear a pasta deixa de "
-                "forçar reindexação"))
+        if looks_like_mounted_drive(target.path):
+            checks.append(Check(
+                "collection source", WARNING,
+                "this folder looks like Google Drive mounted on disk",
+                "It works as is. But if you paste the Drive folder URL "
+                "(.../drive/folders/<id>), lupa gets three things for free:\n"
+                "      · the OCR Google already ran — without it, text baked into "
+                "the images never reaches search\n"
+                "      · shareable https links, which Cowork and other people can open\n"
+                "      · an immutable id per file, so renaming the folder stops "
+                "forcing a full reindex"))
         else:
-            checagens.append(Checagem("origem do acervo", OK,
-                                      "pasta local — sem OCR de brinde, o modelo trabalha um pouco mais"))
+            checks.append(Check(
+                "collection source", OK,
+                "local folder — no free OCR, so the model works a little harder"))
 
-    # 2. Chave do modelo de visão
+    # 2. Vision model key
     if env.get("GEMINI_API_KEY"):
-        checagens.append(Checagem("chave do Gemini", OK, "configurada"))
+        checks.append(Check("Gemini key", OK, "configured"))
     else:
-        checagens.append(Checagem(
-            "chave do Gemini", BLOQUEIO, "GEMINI_API_KEY está vazia",
-            "Pegue uma chave em https://aistudio.google.com/apikey e escreva em\n"
-            "      ~/.francis/secrets/lupa/lupa.env    →    GEMINI_API_KEY=sua-chave"))
+        checks.append(Check(
+            "Gemini key", BLOCKER, "GEMINI_API_KEY is empty",
+            "Get a key at https://aistudio.google.com/apikey and write it into\n"
+            "      your lupa.env    →    GEMINI_API_KEY=your-key"))
 
-    # 3. Credenciais do Drive, só quando o alvo é o Drive
-    if alvo.tipo == "drive":
-        cliente = env.get("LUPA_OAUTH_CLIENT")
-        if _existe(cliente, arquivos_existentes):
-            checagens.append(Checagem("acesso ao Google Drive", OK, "cliente OAuth encontrado"))
+    # 3. Drive credentials, only when the target is Drive
+    if target.kind == "drive":
+        client = env.get("LUPA_OAUTH_CLIENT")
+        if _exists(client, existing_files):
+            checks.append(Check("Google Drive access", OK, "OAuth client found"))
         else:
-            checagens.append(Checagem(
-                "acesso ao Google Drive", BLOQUEIO,
-                f"não achei o cliente OAuth em {cliente or '(não configurado)'}",
-                "Em https://console.cloud.google.com :\n"
-                "      1. ative a Google Drive API no seu projeto\n"
-                "      2. Credenciais → Criar → ID do cliente OAuth → App para computador\n"
-                "      3. baixe o JSON como ~/.francis/secrets/lupa/google-oauth.json"))
+            checks.append(Check(
+                "Google Drive access", BLOCKER,
+                f"no OAuth client at {client or '(not configured)'}",
+                "At https://console.cloud.google.com :\n"
+                "      1. enable the Google Drive API on your project\n"
+                "      2. Credentials → Create → OAuth client ID → Desktop app\n"
+                "      3. download the JSON and save it as the LUPA_OAUTH_CLIENT path"))
 
-        if _existe(env.get("LUPA_OAUTH_TOKEN"), arquivos_existentes):
-            checagens.append(Checagem("login do Google", OK, "sessão salva"))
+        if _exists(env.get("LUPA_OAUTH_TOKEN"), existing_files):
+            checks.append(Check("Google sign-in", OK, "session stored"))
         else:
-            checagens.append(Checagem(
-                "login do Google", AVISO, "ainda não há sessão salva",
-                "Na primeira execução o navegador vai abrir uma vez para você "
-                "autorizar. Depois disso, nunca mais."))
+            checks.append(Check(
+                "Google sign-in", WARNING, "no stored session yet",
+                "On the first run a browser window opens once for you to authorize. "
+                "After that, never again."))
 
-    # 4. O que a rodada vai fazer
-    if indice_existe:
-        checagens.append(Checagem(
-            "estado do índice", OK,
-            "já existe — será um update, só o que mudou custa"))
+    # 4. What this run will do
+    if index_exists:
+        checks.append(Check(
+            "index state", OK,
+            "already exists — this is an update, only changes cost anything"))
     else:
-        checagens.append(Checagem(
-            "estado do índice", OK,
-            "não existe ainda — será a primeira rodada, tudo será descrito"))
+        checks.append(Check(
+            "index state", OK,
+            "does not exist yet — this is the first run, everything gets described"))
 
-    return checagens
+    return checks
 
 
-def formatar(checagens, alvo):
-    """Relatório legível. É o que a pessoa lê antes de decidir."""
-    linhas = [f"Pré-flight · acervo \"{alvo.nome}\"", ""]
-    for c in checagens:
-        linhas.append(f"  {SIMBOLO[c.status]} {c.nome}: {c.mensagem}")
-        if c.como_resolver:
-            for linha in c.como_resolver.split("\n"):
-                linhas.append(f"      {linha}" if not linha.startswith("      ") else linha)
-    return "\n".join(linhas)
+def format_report(checks, target):
+    """The readable report. This is what a person reads before deciding."""
+    lines = [f'Preflight · collection "{target.name}"', ""]
+    for check in checks:
+        lines.append(f"  {SYMBOL[check.status]} {check.name}: {check.message}")
+        if check.how_to_fix:
+            for line in check.how_to_fix.split("\n"):
+                lines.append(f"      {line}" if not line.startswith("      ") else line)
+    return "\n".join(lines)

@@ -1,162 +1,166 @@
-"""Servidor MCP do lupa — JSON-RPC 2.0, biblioteca padrão apenas.
+"""lupa's MCP server — JSON-RPC 2.0, standard library only.
 
-Sem dependências de propósito: o MCP precisa subir em qualquer máquina onde o
-cliente rode, sem venv, sem instalação, sem bootstrap. Ele só LÊ índices já
-escritos — nunca indexa, nunca chama rede, nunca gasta token.
+Deliberately dependency-free: the MCP has to start on any machine where the
+client runs, with no venv, no install, no bootstrap. It only READS indexes that
+were already written — it never indexes, never touches the network, never spends.
 """
 import json
 from pathlib import Path
 
 from lupa.search import search
 
-PROTOCOLO = "2024-11-05"
-VERSAO = "0.1.0"
+PROTOCOL = "2024-11-05"
+VERSION = "0.2.0"
 
-FERRAMENTAS = [
+TOOLS = [
     {
         "name": "lupa_search",
         "description": (
-            "Busca imagens no índice de um acervo visual e devolve os melhores "
-            "candidatos com link e o motivo do casamento. Use SEMPRE isto em vez "
-            "de abrir as imagens: o índice é texto e custa quase nada."
+            "Search images in a visual collection index and return the best "
+            "candidates with links and the reason each one matched. Always use this "
+            "instead of opening the images: the index is text and costs almost nothing."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "consulta": {"type": "string", "description": "termos livres, ex.: 'ponte noturno azul'"},
-                "acervo": {"type": "string", "description": "nome do acervo; vazio busca em todos"},
-                "kind": {"type": "string", "enum": ["foto", "peca", "captura", "grafico", "logo", "outro"]},
-                "medium": {"type": "string", "enum": ["fisico", "digital", "na"]},
-                "orientation": {"type": "string", "enum": ["retrato", "paisagem", "quadrado"]},
-                "has_text": {"type": "boolean", "description": "false exclui peças com texto embutido"},
-                "limite": {"type": "integer", "default": 15},
+                "query": {"type": "string",
+                          "description": "free terms, e.g. 'bridge night blue'"},
+                "collection": {"type": "string",
+                               "description": "collection name; empty searches all of them"},
+                "kind": {"type": "string",
+                         "enum": ["photo", "design", "screenshot", "diagram", "logo", "other"]},
+                "medium": {"type": "string", "enum": ["physical", "digital", "na"]},
+                "orientation": {"type": "string",
+                                "enum": ["portrait", "landscape", "square"]},
+                "has_text": {"type": "boolean",
+                             "description": "false excludes pieces with baked-in text"},
+                "limit": {"type": "integer", "default": 15},
             },
-            "required": ["consulta"],
+            "required": ["query"],
         },
     },
     {
         "name": "lupa_status",
-        "description": "Lista os acervos indexados, com total de imagens e data da última rodada.",
+        "description": "List indexed collections, with image counts and last run date.",
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
-FILTROS_ACEITOS = ("kind", "medium", "orientation", "has_text")
+ACCEPTED_FILTERS = ("kind", "medium", "orientation", "has_text")
 
 
-class Servidor:
-    def __init__(self, raiz_indices):
-        self.raiz = Path(raiz_indices)
+class Server:
+    def __init__(self, index_root):
+        self.root = Path(index_root)
 
-    # --- leitura dos índices no disco ---
+    # --- reading indexes from disk ---
 
-    def acervos(self):
-        if not self.raiz.exists():
+    def collections(self):
+        if not self.root.exists():
             return []
-        return sorted(p.name for p in self.raiz.iterdir()
-                      if (p / "catalog.jsonl").exists())
+        return sorted(entry.name for entry in self.root.iterdir()
+                      if (entry / "catalog.jsonl").exists())
 
-    def _carregar(self, acervo):
-        caminho = self.raiz / acervo / "catalog.jsonl"
-        if not caminho.exists():
+    def _load(self, collection):
+        path = self.root / collection / "catalog.jsonl"
+        if not path.exists():
             return []
-        itens = []
-        for linha in caminho.read_text(encoding="utf-8").splitlines():
-            linha = linha.strip()
-            if linha:
+        items = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
                 try:
-                    itens.append(dict(json.loads(linha), _acervo=acervo))
+                    items.append(dict(json.loads(line), _collection=collection))
                 except json.JSONDecodeError:
                     continue
-        return itens
+        return items
 
-    def _manifesto(self, acervo):
-        caminho = self.raiz / acervo / "MANIFEST.json"
+    def _manifest(self, collection):
+        path = self.root / collection / "MANIFEST.json"
         try:
-            return json.loads(caminho.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
 
-    # --- ferramentas ---
+    # --- tools ---
 
-    def ferramenta_search(self, args):
-        acervo = args.get("acervo")
-        disponiveis = self.acervos()
+    def tool_search(self, args):
+        collection = args.get("collection")
+        available = self.collections()
 
-        if acervo and acervo not in disponiveis:
-            return (f'Acervo "{acervo}" não está indexado.\n'
-                    f"Disponíveis: {', '.join(disponiveis) or 'nenhum'}")
+        if collection and collection not in available:
+            return (f'Collection "{collection}" is not indexed.\n'
+                    f"Available: {', '.join(available) or 'none'}")
 
-        alvos = [acervo] if acervo else disponiveis
-        catalogo = [i for a in alvos for i in self._carregar(a)]
-        filtros = {c: args[c] for c in FILTROS_ACEITOS if args.get(c) is not None}
+        targets = [collection] if collection else available
+        catalog = [item for name in targets for item in self._load(name)]
+        filters = {key: args[key] for key in ACCEPTED_FILTERS if args.get(key) is not None}
 
-        achados = search(catalogo, args.get("consulta", ""), filtros=filtros,
-                         limite=int(args.get("limite") or 15))
-        if not achados:
-            return ("Nenhum resultado. Tente termos mais gerais, ou rode "
-                    "`lupa_status` para ver o vocabulário de cada acervo.")
+        results = search(catalog, args.get("query", ""), filters=filters,
+                         limit=int(args.get("limit") or 15))
+        if not results:
+            return ("No results. Try broader terms, or call `lupa_status` to see "
+                    "the vocabulary of each collection.")
 
-        plural = "candidato" if len(achados) == 1 else "candidatos"
-        linhas = [f"{len(achados)} {plural} (de {len(catalogo)} imagens):", ""]
-        for r in achados:
-            tipo = f"{r.get('kind')}/{r.get('medium')}"
-            linhas.append(
-                f"- **{r.get('file')}** [{tipo}, {r.get('orientation')}] — "
-                f"{r.get('caption', '')}\n"
-                f"  tags: {', '.join(r.get('tags') or [])}\n"
-                f"  {r.get('url', '')}\n"
-                f"  _casou por: {r.get('_motivo')}_")
-        return "\n".join(linhas)
+        noun = "candidate" if len(results) == 1 else "candidates"
+        lines = [f"{len(results)} {noun} (out of {len(catalog)} images):", ""]
+        for result in results:
+            kind = f"{result.get('kind')}/{result.get('medium')}"
+            lines.append(
+                f"- **{result.get('file')}** [{kind}, {result.get('orientation')}] — "
+                f"{result.get('caption', '')}\n"
+                f"  tags: {', '.join(result.get('tags') or [])}\n"
+                f"  {result.get('url', '')}\n"
+                f"  _matched on: {result.get('_reason')}_")
+        return "\n".join(lines)
 
-    def ferramenta_status(self, _args):
-        disponiveis = self.acervos()
-        if not disponiveis:
-            return f"Nenhum acervo indexado em {self.raiz}. Rode `lupa index <acervo>`."
+    def tool_status(self, _args):
+        available = self.collections()
+        if not available:
+            return f"No collections indexed under {self.root}. Run `lupa index <target>`."
 
-        linhas = ["Acervos indexados:", ""]
-        for a in disponiveis:
-            m = self._manifesto(a)
-            linhas.append(f"- **{a}** — {m.get('total', '?')} imagens · "
-                          f"atualizado {m.get('atualizado_em', '?')} · "
-                          f"{m.get('rodadas', '?')} rodadas")
-        return "\n".join(linhas)
+        lines = ["Indexed collections:", ""]
+        for name in available:
+            manifest = self._manifest(name)
+            lines.append(f"- **{name}** — {manifest.get('total', '?')} images · "
+                         f"updated {manifest.get('updated_at', '?')} · "
+                         f"{manifest.get('runs', '?')} runs")
+        return "\n".join(lines)
 
-    # --- despacho JSON-RPC ---
+    # --- JSON-RPC dispatch ---
 
-    def despachar(self, pedido):
-        metodo = pedido.get("method")
-        pedido_id = pedido.get("id")
+    def dispatch(self, request):
+        method = request.get("method")
+        request_id = request.get("id")
 
-        if pedido_id is None:  # notificação: processa e cala
+        if request_id is None:  # a notification: handle it and stay quiet
             return None
 
-        def ok(resultado):
-            return {"jsonrpc": "2.0", "id": pedido_id, "result": resultado}
+        def ok(result):
+            return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-        if metodo == "initialize":
-            return ok({"protocolVersion": PROTOCOLO,
+        if method == "initialize":
+            return ok({"protocolVersion": PROTOCOL,
                        "capabilities": {"tools": {}},
-                       "serverInfo": {"name": "lupa", "version": VERSAO}})
+                       "serverInfo": {"name": "lupa", "version": VERSION}})
 
-        if metodo == "tools/list":
-            return ok({"tools": FERRAMENTAS})
+        if method == "tools/list":
+            return ok({"tools": TOOLS})
 
-        if metodo == "tools/call":
-            params = pedido.get("params") or {}
-            nome = params.get("name")
+        if method == "tools/call":
+            params = request.get("params") or {}
+            name = params.get("name")
             args = params.get("arguments") or {}
-            funcoes = {"lupa_search": self.ferramenta_search,
-                       "lupa_status": self.ferramenta_status}
-            if nome not in funcoes:
-                return {"jsonrpc": "2.0", "id": pedido_id,
-                        "error": {"code": -32602, "message": f"ferramenta desconhecida: {nome}"}}
+            handlers = {"lupa_search": self.tool_search, "lupa_status": self.tool_status}
+            if name not in handlers:
+                return {"jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32602, "message": f"unknown tool: {name}"}}
             try:
-                texto = funcoes[nome](args)
-            except Exception as erro:  # o cliente precisa do motivo, não de um crash
-                return ok({"content": [{"type": "text", "text": f"Erro: {erro}"}],
+                text = handlers[name](args)
+            except Exception as error:  # the client needs the reason, not a crash
+                return ok({"content": [{"type": "text", "text": f"Error: {error}"}],
                            "isError": True})
-            return ok({"content": [{"type": "text", "text": texto}]})
+            return ok({"content": [{"type": "text", "text": text}]})
 
-        return {"jsonrpc": "2.0", "id": pedido_id,
-                "error": {"code": -32601, "message": f"método não suportado: {metodo}"}}
+        return {"jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32601, "message": f"unsupported method: {method}"}}
