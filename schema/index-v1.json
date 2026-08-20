@@ -28,6 +28,11 @@
     "palette": {"type": "array", "items": {"type": "string"}, "description": "dominant colors as hex codes"},
     "has_text": {"type": "boolean", "description": "the image has text baked into it; answered by the vision model, which is the only party that can see it"},
     "text": {"type": "string", "description": "the words inside the image, transcribed by the vision model. Not OCR from Drive: the Drive property this was once read from does not exist, so indexes written before that was found carry an empty string here and has_text false on every line"},
+    "entities": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "proper names carried by the image \u2014 services, products, campaigns, brands, people \u2014 written as they appear, case preserved. Optional and additive: it is NOT in `required`, because every index written before it existed has no key here and must stay valid without a reindex. Absent and [] mean the same thing, and [] is the common answer. Never inferred: a name is here only when it is legible in the image or unmistakable in it"
+    },
     "labels": {"type": "array", "items": {"type": "string"}, "description": "retired. It held Drive's own image labels, read from a property that does not exist in the Drive API, so it was always empty; no longer written, still present in older indexes"},
     "hash": {"type": "string", "description": "file checksum; this is what makes updates incremental"},
     "v": {"type": "integer", "const": 1}

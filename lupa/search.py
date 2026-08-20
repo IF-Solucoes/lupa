@@ -14,7 +14,9 @@ DEFAULT_LIMIT = 15
 # `labels` is not scored, and is no longer written: it came out of the same phantom
 # field. Indexes written earlier still carry the key, empty; reading it costs nothing
 # and scoring it would only invite false positives.
-WEIGHTS = {"tags": 5, "caption": 3, "file": 2, "text": 1}
+# `entities` outranks even a tag: a hit on a proper noun is all but decisive,
+# because a name is on the few pieces that carry it and a tag is on hundreds.
+WEIGHTS = {"entities": 6, "tags": 5, "caption": 3, "file": 2, "text": 1}
 
 
 def _normalize(text):
@@ -25,6 +27,9 @@ def _normalize(text):
 
 def _fields(item):
     return {
+        # `or []` on every one: an index written before a field existed has no
+        # key for it, and must still be searchable on the fields it does have.
+        "entities": " ".join(item.get("entities") or []),
         "tags": " ".join(item.get("tags") or []),
         "caption": item.get("caption") or "",
         "file": item.get("file") or "",

@@ -58,7 +58,10 @@ class PipelineTestCase(unittest.TestCase):
                    now=kw.pop("now", "2026-08-20T10-00-00"), **kw)
 
     def catalog(self):
-        lines = (self.dir / "catalog.jsonl").read_text().strip().splitlines()
+        # encoding spelled out: a Windows default of cp1252 cannot even read
+        # back a catalog holding an accented word, which is most of them here.
+        lines = (self.dir / "catalog.jsonl").read_text(
+            encoding="utf-8").strip().splitlines()
         return [json.loads(line) for line in lines if line.strip()]
 
 
@@ -405,3 +408,60 @@ class TestTheRunAccountsForItsTokens(PipelineTestCase):
         result = self.execute(FakeSource([a_file("a", "1")]), mode="index")
         self.assertTrue(result["written"])
         self.assertIsNone(result.get("usage"))
+
+
+class TestTheNamesReachTheCatalog(PipelineTestCase):
+    """The whole path for `entities`, from the model's reply to the files an
+    agent reads. Every unit on this route is tested apart; this is the one that
+    would catch the field being dropped somewhere between them — which is
+    exactly how 875 rows once got written with an empty `text`.
+    """
+
+    class NamingModel:
+        """Names the designs, and stays silent about the photographs — the real
+        distribution, where most images carry no name at all."""
+
+        def __call__(self, item, image, mime):
+            named = item["file"].startswith("post")
+            return {"caption": f"description of {item['file']}",
+                    "tags": ["dog", "clinic"], "scene": "indoor", "people": 0,
+                    "palette": ["#000000"], "has_text": named,
+                    "text": "CASTRAÇÃO SOLIDÁRIA" if named else "",
+                    "entities": ["Castração Solidária"] if named else []}
+
+    def index_md(self):
+        return (self.dir / "INDEX.md").read_text(encoding="utf-8")
+
+    def run_it(self):
+        source = FakeSource([a_file("a", "h1", name="post-01.png"),
+                             a_file("b", "h2", name="gato.png")])
+        self.execute(source, mode="index", describe=self.NamingModel())
+
+    def test_the_name_lands_on_the_line_of_the_image_that_carries_it(self):
+        self.run_it()
+        rows = {item["file"]: item for item in self.catalog()}
+        self.assertEqual(rows["post-01.png"]["entities"], ["Castração Solidária"])
+
+    def test_an_image_that_names_nothing_carries_an_empty_list(self):
+        self.run_it()
+        rows = {item["file"]: item for item in self.catalog()}
+        self.assertEqual(rows["gato.png"]["entities"], [])
+
+    def test_the_index_publishes_the_name(self):
+        self.run_it()
+        self.assertIn("## Entities", self.index_md())
+        self.assertIn("Castração Solidária", self.index_md())
+
+    def test_the_name_gets_a_file_of_its_own(self):
+        self.run_it()
+        page = self.dir / "by-entity" / "castracao-solidaria.md"
+        self.assertTrue(page.exists())
+        self.assertIn("post-01.png", page.read_text(encoding="utf-8"))
+
+    def test_a_model_that_never_mentions_the_field_still_indexes(self):
+        """The old double, unchanged: a reply with no `entities` key at all."""
+        source = FakeSource([a_file("a", "h1")])
+        self.execute(source, mode="index")
+        self.assertEqual(self.catalog()[0]["entities"], [])
+        self.assertIn("## Entities", self.index_md())
+        self.assertFalse((self.dir / "by-entity").exists())

@@ -473,3 +473,78 @@ class TestTheBudgetsAgreeWithTheMeasurement(unittest.TestCase):
         inbound, outbound = self.budgets()
         self.assertLess(inbound, self.MEASURED_INPUT * 1.5)
         self.assertLess(outbound, self.MEASURED_OUTPUT * 1.5)
+
+
+class TestTheModelIsAskedForProperNouns(unittest.TestCase):
+    """`entities` — the names on the piece, which generic tags can never carry.
+
+    A collection of 875 images from one veterinary clinic came back with a
+    vocabulary of `dog`, `medical`, `clinic`, `gloves` — true of every clinic on
+    earth and therefore useless to the agency that owns THIS one. The prompt never
+    asked for a single proper noun, so none was ever written down.
+
+    The dangerous half of the fix is invention: a hallucinated service name reads
+    exactly like a real one, and a human trusts a proper noun on sight. The prompt
+    has to forbid it in as many words, and the test has to hold that line.
+    """
+
+    def test_the_prompt_asks_for_the_field(self):
+        self.assertIn('"entities"', build_prompt(PHOTO_META))
+
+    def test_the_prompt_names_what_counts_as_one(self):
+        prompt = build_prompt(PHOTO_META).lower()
+        for word in ("service", "product", "campaign", "brand"):
+            self.assertIn(word, prompt)
+
+    def test_the_prompt_forbids_inventing_them(self):
+        """The whole field is worthless the moment one name in it is made up:
+        a human who reads a proper noun stops checking."""
+        block = build_prompt(PHOTO_META).split('"entities"')[1].lower()
+        self.assertIn("do not invent", block)
+
+    def test_the_prompt_says_an_empty_list_is_a_valid_answer(self):
+        """Most photographs have no entity at all. A model that believes the field
+        must be filled fills it, and every fill is a lie."""
+        self.assertIn("[]", build_prompt(PHOTO_META))
+
+    def test_the_prompt_says_the_overlap_with_text_is_wanted(self):
+        """The service names usually ARE in the transcribed text. A model left to
+        guess reads the repetition as redundancy and drops the field."""
+        prompt = build_prompt(PHOTO_META)
+        entities_block = prompt.split('"entities"')[1]
+        self.assertIn("text", entities_block)
+
+
+class TestEntitiesReachTheItem(unittest.TestCase):
+    def test_the_names_survive_the_merge(self):
+        item = merge(PHOTO_META, dict(VISION, entities=["Castração", "VacinAÇÃO"]))
+        self.assertEqual(item["entities"], ["Castração", "VacinAÇÃO"])
+
+    def test_case_is_preserved_because_these_are_proper_nouns(self):
+        item = merge(PHOTO_META, dict(VISION, entities=["Banho e Tosa"]))
+        self.assertEqual(item["entities"], ["Banho e Tosa"])
+
+    def test_a_model_that_says_nothing_leaves_an_empty_list(self):
+        self.assertEqual(merge(PHOTO_META, VISION)["entities"], [])
+
+    def test_null_is_an_empty_list_and_not_a_string(self):
+        self.assertEqual(merge(PHOTO_META, dict(VISION, entities=None))["entities"], [])
+
+    def test_the_word_none_is_not_an_entity(self):
+        """`["none"]` is the classic way a model fills a field it should leave
+        empty, and it would land in by-entity/ as a proper noun of its own."""
+        for junk in (["none"], ["N/A"], ["nenhum"], ["unknown"], [""], ["  "], ["-"]):
+            self.assertEqual(merge(PHOTO_META, dict(VISION, entities=junk))["entities"], [],
+                             f"{junk!r} should not survive")
+
+    def test_a_string_instead_of_a_list_is_not_exploded_into_letters(self):
+        item = merge(PHOTO_META, dict(VISION, entities="Castração"))
+        self.assertEqual(item["entities"], ["Castração"])
+
+    def test_duplicates_collapse_ignoring_case(self):
+        item = merge(PHOTO_META, dict(VISION, entities=["Vacinação", "vacinação", "V "]))
+        self.assertEqual(item["entities"], ["Vacinação", "V"])
+
+    def test_entities_are_not_mixed_into_the_generic_tags(self):
+        item = merge(PHOTO_META, dict(VISION, entities=["Castração"]))
+        self.assertNotIn("castração", item["tags"])

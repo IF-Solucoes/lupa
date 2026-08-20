@@ -45,6 +45,17 @@ LANGUAGE_NAMES = {"en": "English", "pt": "Brazilian Portuguese", "es": "Spanish"
 # the model, and 9 images of one collection is a small sample), the prompt below
 # is rewritten, or classify() starts settling kind/medium — that last one alone
 # would drop the prompt from 333 tokens to 246.
+#
+# The prompt HAS since been rewritten: `entities` was added to it, and the
+# instruction section grew from 1325 to 1831 characters. Scaled off the 333-token
+# measurement that same text produced, the prompt is now ~460 tokens, so the
+# dearest request measured goes from 1440 to ~1567 and the average from 1416 to
+# ~1543. Both still fit under 1600, with 2% and 4% to spare instead of 11% and
+# 13%. The number is deliberately left where it is: it was set by measurement and
+# moving it on an estimate would replace a measured budget with a guessed one.
+# The next real run measures itself — usage_lines() below says out loud when the
+# count exceeds the budget, and that is the moment to move this, with the API's
+# own figure in hand.
 INPUT_TOKENS_PER_IMAGE = 1600
 
 # Same run: 218.9 output tokens per image, against the 200 guessed here before —
@@ -58,6 +69,11 @@ INPUT_TOKENS_PER_IMAGE = 1600
 # Deliberately not sized for that 416-token worst case: a budget is multiplied by
 # every image in the collection, and quoting the dearest image 875 times over is
 # its own kind of lie.
+#
+# `entities` adds to this side too, but barely: an empty list is about 6 tokens of
+# JSON and the common answer, and a piece that does name two services costs some
+# 15. Against a last measured average of 145.5, the field is worth single digits
+# per image — the 275 here covered a 89% overshoot before and still covers one.
 OUTPUT_TOKENS_PER_IMAGE = 275
 
 # Price per 1M tokens, per model — (input, output). Batch mode is exactly half on
@@ -177,6 +193,14 @@ def build_prompt(meta, language=DEFAULT_LANGUAGE):
         '  "text": the words visible in the image, transcribed exactly.',
         '     Stop at 60 words: transcribe the largest and most prominent first.',
         '     "" when there are none. Never invent what you cannot read.',
+        '  "entities": proper names the image carries — services, products,',
+        "     campaigns, brands, people — copied as written, not translated.",
+        "     [] when there are none, and that is the usual answer.",
+        "     Do not invent and do not infer from context: only a name legible in",
+        "     the image, or one you recognise beyond doubt. An empty list beats a",
+        "     plausible name.",
+        '     Names also present in "text" belong here as well: that is wanted, not',
+        '     redundant — "text" is prose, this is a list to count and filter.',
     ]
 
     # The kind is only asked about when metadata could not settle it.
@@ -229,6 +253,41 @@ def _as_bool(value):
     return bool(value)
 
 
+# What a model writes into a field it has nothing to put in. Any of these would
+# become a proper name of the collection — counted in INDEX.md, given a file of
+# its own under by-entity/ — and would be indistinguishable from a real one.
+NON_ANSWERS = {
+    "none", "n/a", "na", "null", "nil", "nan", "-", "--", "?", "unknown",
+    "nenhum", "nenhuma", "nada", "desconhecido", "sem nome", "no name",
+    "not applicable", "no text", "sem texto", "ninguno", "aucun",
+}
+
+
+def _clean_entities(raw):
+    """The proper names, exactly as the model wrote them.
+
+    Case is preserved, unlike tags: `tags` are keywords and lowercase is right
+    for them, while these are names, and "SESI" and "Sesi" are not the same
+    string on a poster. Deduplication still ignores case, because one image
+    naming a service twice is not two services.
+
+    A model that answers with a bare string instead of a list is taken at its
+    word rather than exploded into letters, and a non-answer ("none", "N/A")
+    is dropped: empty is a legitimate, frequent and honest result here.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    seen, out = set(), []
+    for entity in raw or []:
+        cleaned = " ".join(str(entity).split())
+        key = cleaned.lower()
+        if not cleaned or key in NON_ANSWERS or key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out
+
+
 def _clean_tags(raw):
     seen, out = set(), []
     for tag in raw or []:
@@ -268,6 +327,10 @@ def merge(meta, vision):
         # Both from the model, and only from the model: metadata cannot see.
         "has_text": _as_bool(vision.get("has_text")),
         "text": str(vision.get("text") or "").strip(),
+        # Kept out of `tags` on purpose. "what does THIS client have" and "what
+        # scenes are in here" are different questions, and one list cannot be
+        # sorted back into two once they are mixed.
+        "entities": _clean_entities(vision.get("entities")),
         "hash": meta.get("hash"),
     }
 

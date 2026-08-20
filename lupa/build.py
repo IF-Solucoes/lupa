@@ -145,12 +145,109 @@ def _write_by_tag(index_dir, items):
         atomic_write(folder / f"{tag}.md", "\n".join(lines) + "\n")
 
 
+def _write_by_entity(index_dir, items):
+    """The same inverted index, for the proper names.
+
+    Worth its own directory rather than a corner of `by-tag/`: a tag answers
+    "what scenes are in this collection", an entity answers "what does THIS
+    client have", and an agency is paid for the second question. Mixing them
+    into one folder would make the second unanswerable without reading all 547
+    file names. They are also far fewer, so the directory stays browsable.
+
+    Nothing is written when nothing is named, and a directory left over from a
+    run that did find names is cleared: an empty `by-entity/` would read as a
+    writer that failed, which is a different claim from a collection that names
+    nothing.
+    """
+    folder = index_dir / "by-entity"
+
+    by_entity, written_as = defaultdict(list), {}
+    for item in items:
+        for entity in item.get("entities") or []:
+            slug = tag_filename(entity)
+            if not slug:
+                continue
+            by_entity[slug].append(item)
+            written_as.setdefault(slug, entity)
+
+    if not by_entity:
+        if folder.exists():
+            for stale in folder.glob("*.md"):
+                stale.unlink()
+            try:
+                folder.rmdir()
+            except OSError:      # something else lives in there; leave it alone
+                pass
+        return
+
+    folder.mkdir(exist_ok=True)
+    for stale in folder.glob("*.md"):   # a name that vanished leaves no orphan
+        if stale.stem not in by_entity:
+            stale.unlink()
+
+    for slug, members in by_entity.items():
+        lines = [f"# {written_as[slug]} — {len(members)} images", ""]
+        lines += ["| file | type | orientation | caption | link |", "|---|---|---|---|---|"]
+        for member in sorted(members, key=lambda x: x.get("file", "")):
+            kind = f"{member.get('kind') or '?'}/{member.get('medium') or '?'}"
+            lines.append(
+                f"| {member.get('file')} | {kind} | {member.get('orientation')} | "
+                f"{member.get('caption', '')} | {member.get('url', '')} |")
+        atomic_write(folder / f"{slug}.md", NEWLINE.join(lines) + NEWLINE)
+
+
+def _frequency_list(counter, cap, complete_in):
+    """A frequency list that never presents a cut as if it were the whole.
+
+    This function exists because the vocabulary section did exactly that: it
+    printed the 40 most frequent of 547 tags and said nothing about it, so an
+    agent reading INDEX.md end to end — which is what INDEX.md asks it to do —
+    took those 40 for the vocabulary of the collection, and came one sentence
+    from telling a client the archive held no printed material. It held thirteen
+    tags about printed material, all of them below the cut.
+
+    The cut itself stays. INDEX.md is read whole on every query and is budgeted
+    at about 2 KB; 547 tags with their counts is four times the size of the
+    entire file, paid on every read by every agent. What was missing was never
+    the other 507 words — those are one directory listing away — it was the
+    sentence saying they exist and where.
+    """
+    entries = counter.most_common(cap)
+    listing = " · ".join(f"`{name}` ({n})" for name, n in entries)
+    if len(counter) <= cap:
+        return listing
+    return (f"The **{len(entries)} most frequent** of **{len(counter)}** distinct — "
+            f"the complete list is the file names under `{complete_in}`."
+            + NEWLINE + NEWLINE + listing)
+
+
+# 40 tags is roughly 600 bytes of a file budgeted at ~2 KB and read in full on
+# every query. The names get a far higher ceiling: there are few of them (a name
+# is on the pieces that carry it, not on every photo) and they are the whole
+# reason one client's archive differs from another's, so truncating them would
+# cut exactly the part that cannot be guessed. Both caps declare themselves when
+# they bite.
+VOCABULARY_CAP = 40
+ENTITIES_CAP = 300
+
+NO_ENTITIES = ("_No proper name is legible in this collection: no service, product, "
+               "campaign, brand or person is named on any of these images. That is an "
+               "answer about the collection, not a gap in the index — most "
+               "photographs name nothing._")
+
+
 def _write_index_md(index_dir, collection, items, now, model):
     tags = Counter(tag for item in items for tag in (item.get("tags") or []))
     kinds = Counter(item.get("kind") or "undetermined" for item in items)
     mediums = Counter(item.get("medium") or "undetermined" for item in items)
+    # `or []`, never a bare `[]`: every index written before this field existed
+    # carries no key here at all, and has to keep building.
+    entities = Counter(entity for item in items
+                       for entity in (item.get("entities") or []))
 
-    vocabulary = " · ".join(f"`{tag}` ({n})" for tag, n in tags.most_common(40))
+    vocabulary = _frequency_list(tags, VOCABULARY_CAP, "by-tag/") or "_none yet_"
+    named = (_frequency_list(entities, ENTITIES_CAP, "by-entity/") if entities
+             else NO_ENTITIES)
     by_kind = " · ".join(f"{kind}: {n}" for kind, n in kinds.most_common())
     by_medium = " · ".join(f"{medium}: {n}" for medium, n in mediums.most_common())
 
@@ -173,22 +270,37 @@ def _write_index_md(index_dir, collection, items, now, model):
 
 ## Vocabulary
 
+Generic terms — what kind of scene each image is. Any collection on this subject
+would share most of them.
+
 {vocabulary}
+
+## Entities
+
+Proper names read off the pieces themselves: services, products, campaigns, brands,
+people. This is what belongs to THIS collection and to no other. Empty on most
+images, and never inferred — a name is here only when it is written on the image
+or unmistakable in it.
+
+{named}
 
 ## How to query
 
-1. **Found a tag above?** Read `by-tag/<tag>.md`. It is a ready-made table with
+1. **Looking for what this client specifically does, sells or ran?** Start at
+   **Entities**, then read `by-entity/<name>.md`.
+2. **Found a tag above?** Read `by-tag/<tag>.md`. It is a ready-made table with
    links. Stop there.
-2. **Need to cross fields** (type + orientation + no text)? Filter `catalog.jsonl`.
+3. **Need to cross fields** (type + orientation + no text)? Filter `catalog.jsonl`.
    One line per image; fields are defined in `schema/index-v1.json`.
-3. **Have the lupa MCP?** Call `lupa_search` and get ranked finalists directly.
+4. **Have the lupa MCP?** Call `lupa_search` and get ranked finalists directly.
 
 ## Files
 
 | file | purpose |
 |---|---|
 | `INDEX.md` | this map — always read it first |
-| `by-tag/*.md` | inverted index, cheap to read without code |
+| `by-tag/*.md` | inverted index by generic term, cheap to read without code |
+| `by-entity/*.md` | the same, by proper name — absent when nothing is named |
 | `catalog.jsonl` | one line per image, for field-level filtering |
 | `contact-sheets/` | visual grids, for human curation |
 | `MANIFEST.json` | internal state: the hashes that make updates incremental |
@@ -278,6 +390,7 @@ def write_index(index_dir, collection, items, summary, model, cost_usd, now,
     _write_catalog(index_dir, items)
     _write_search_projection(index_dir, items)
     _write_by_tag(index_dir, items)
+    _write_by_entity(index_dir, items)
     _write_index_md(index_dir, collection, items, now, model)
     _write_run_report(index_dir, collection, items, summary, cost_usd, model, now,
                       usage=usage, batch=batch)

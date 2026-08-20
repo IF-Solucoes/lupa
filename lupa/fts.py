@@ -34,14 +34,26 @@ CREATE INDEX items_orientation ON items(orientation);
 
 -- porter gives English stemming; remove_diacritics makes "café" match "cafe".
 CREATE VIRTUAL TABLE fts USING fts5(
-    file, caption, tags, text,
+    file, caption, tags, entities, text,
     tokenize = "porter unicode61 remove_diacritics 2"
 );
 """
 
-# Tags are curation, captions are description, OCR is incidental. FTS5 takes the
-# weights in column order: file, caption, tags, text.
-BM25_WEIGHTS = (2.0, 3.0, 5.0, 1.0)
+# Entities are the client's own names, tags are curation, captions are
+# description, the baked-in text is incidental.
+#
+# Keyed by column name rather than given in column order, because the column
+# order is a property of the database on disk and not of this file: every
+# index.db written before `entities` existed has four columns, and index.db is
+# only rebuilt by an indexing run — which is the operation that costs money.
+# Passing five weights to a four-column bm25() is an OperationalError, i.e. an
+# existing collection that stops answering until someone pays to reindex it.
+BM25_WEIGHTS = {"file": 2.0, "caption": 3.0, "tags": 5.0, "entities": 6.0, "text": 1.0}
+DEFAULT_WEIGHT = 1.0
+
+# The columns of the fts table, in the order they were declared. Written down
+# once so build() and the INSERT cannot drift apart.
+FTS_COLUMNS = ("file", "caption", "tags", "entities", "text")
 
 
 def available():
@@ -74,9 +86,11 @@ def build(catalog, db_path):
                      item.get("kind"), item.get("medium"), item.get("orientation"),
                      1 if item.get("has_text") else 0))
                 connection.execute(
-                    "INSERT INTO fts (rowid, file, caption, tags, text) VALUES (?,?,?,?,?)",
+                    "INSERT INTO fts (rowid, file, caption, tags, entities, text)"
+                    " VALUES (?,?,?,?,?,?)",
                     (position, item.get("file") or "", item.get("caption") or "",
-                     " ".join(item.get("tags") or []), item.get("text") or ""))
+                     " ".join(item.get("tags") or []),
+                     " ".join(item.get("entities") or []), item.get("text") or ""))
     finally:
         connection.close()
 
@@ -95,6 +109,16 @@ def _match_expression(terms, conjunction=True):
     return joiner.join(f'"{term}"*' for term in terms)
 
 
+def _weights_of(connection):
+    """Ranking weights matching the columns this database actually has.
+
+    Asked of the file, never assumed: a database written by an older lupa has
+    fewer columns, and bm25() refuses a weight it has no column for.
+    """
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(fts)")]
+    return [BM25_WEIGHTS.get(column, DEFAULT_WEIGHT) for column in columns]
+
+
 def _rows(connection, terms, filters, limit, conjunction):
     where, params = [], []
     if terms:
@@ -106,9 +130,11 @@ def _rows(connection, terms, filters, limit, conjunction):
         where.append(f"items.{column} = ?")
         params.append(1 if value is True else 0 if value is False else value)
 
-    order = "ORDER BY bm25(fts, ?, ?, ?, ?)" if terms else "ORDER BY items.rowid"
+    order = "ORDER BY items.rowid"
     if terms:
-        params += list(BM25_WEIGHTS)
+        weights = _weights_of(connection)
+        order = f"ORDER BY bm25(fts, {', '.join('?' * len(weights))})"
+        params += weights
 
     sql = ("SELECT items.payload FROM items "
            + ("JOIN fts ON fts.rowid = items.rowid " if terms else "")

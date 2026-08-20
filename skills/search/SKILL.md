@@ -63,6 +63,32 @@ Requests these actually solve:
 - *"how we have applied the brand in print"* → `kind=design`, `medium=physical`
 - *"story references"* → `orientation=portrait`, `kind=design`
 
+## The client's own words: `entities`
+
+Tags are generic by nature — `dog`, `clinic`, `indoor` describe a subject, not a
+client. `entities` is the separate list of **proper names read off the piece**:
+services, products, campaigns, brands, people, written as they appear
+(`Castração Solidária`, `Banho e Tosa`). It is the field that answers *"what does
+THIS client have"*, and it is the sharpest query available — it outranks every
+other field, because a name sits on the handful of pieces that carry it while a
+tag sits on hundreds.
+
+Three things to know before you rely on it:
+
+- It is **empty on most images**, on purpose. A photograph of a cat names nothing.
+  An empty result for a name is not a broken index.
+- It is **never inferred**. The model writes a name down only when it is legible in
+  the image or unmistakable in it, so absence means "not on the piece", not "not a
+  client of theirs".
+- **Only indexes built after this field existed have it.** An older index carries
+  no names at all — read `INDEX.md`, whose Entities section says so in as many
+  words. Filling it costs a rebuild (`lupa-index` skill).
+
+It is not one of the exact filters above and has no flag of its own — a name is a
+term, not a category. You reach it by searching the name itself, or by reading
+`by-entity/<name>.md` in the index folder, which lists every image carrying that
+name with links.
+
 ## How ranking works
 
 Search runs over a BM25 index, so a rare term outweighs a common one — "cable-stayed"
@@ -70,14 +96,14 @@ counts for far more than "blue". All your terms are required; when nothing match
 them all, the search falls back to any of them and the reason says `some terms`
 instead of `all terms`. Prefixes work: `bann` finds `banner`.
 
-The four searchable fields are `tags`, `caption`, `file` and `text`, in that order
-of weight. There is no `labels` field to search: it was harvested from a Drive
-property that does not exist, so it was always empty and is no longer written.
+The five searchable fields are `entities`, `tags`, `caption`, `file` and `text`, in
+that order of weight. There is no `labels` field to search: it was harvested from a
+Drive property that does not exist, so it was always empty and is no longer written.
 
 ## Where the words come from
 
-Everything you search — caption, tags, `has_text` and the transcribed `text` —
-is written by the **vision model that looked at the image**. Google Drive returns
+Everything you search — caption, tags, `entities`, `has_text` and the transcribed
+`text` — is written by the **vision model that looked at the image**. Google Drive returns
 no text of any kind to lupa, so this is true of a Drive collection and a local
 folder alike: neither has an advantage in what can be found by words.
 
@@ -106,10 +132,13 @@ from the picture, so open the finalists when the answer has to be visual.
 ## When the search finds nothing
 
 1. Read the collection's vocabulary: `~/.lupa/indexes/<collection>/INDEX.md` by
-   default (`lupa_status` lists the collection names, not the vocabulary). Careful:
-   it shows only the **40 most frequent** tags and does not say so — a collection
-   with 546 tags shows 40. An absent tag is not proof of an absent subject; the full
-   list is the file names under `by-tag/`.
+   default (`lupa_status` lists the collection names, not the vocabulary). It shows
+   the **40 most frequent** tags and, when there are more, says how many exist and
+   where the complete list is — the file names under `by-tag/`. Read that sentence
+   before concluding a subject is absent: an index written before it existed shows
+   40 tags of 547 and claims nothing at all, and a collection had 13 tags about
+   printed material below that cut. The proper names are in the **Entities**
+   section of the same file, complete, with `by-entity/` beside it.
 2. Try the English term, if the query was not in English (see above).
 3. Try broader terms — the index uses concrete words ("wood", "natural-light"),
    not abstractions ("cozy", "premium").
