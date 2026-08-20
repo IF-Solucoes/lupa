@@ -1,0 +1,8 @@
+{
+  "name": "lupa",
+  "version": "0.1.0",
+  "description": "Índice de acervo visual para agentes: cria, atualiza e pesquisa descrições de imagens do Google Drive sem que a IA precise abrir as imagens.",
+  "author": "Victor Ferreira",
+  "homepage": "https://github.com/mindtec-victorf/lupa",
+  "license": "MIT"
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mindtec-victorf/lupa/schema/index-v1.json",
+  "title": "lupa · linha do catalog.jsonl (v1)",
+  "type": "object",
+  "required": ["id", "file", "url", "kind", "medium", "caption", "tags", "hash", "v"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {"type": "string", "description": "id do arquivo no Google Drive"},
+    "file": {"type": "string", "description": "nome do arquivo"},
+    "url": {"type": "string", "description": "link de visualização"},
+    "w": {"type": "integer"}, "h": {"type": "integer"},
+    "aspect": {"type": "string", "examples": ["4:5", "9:16", "3:2"]},
+    "orientation": {"enum": ["retrato", "paisagem", "quadrado"]},
+    "kind": {
+      "enum": ["foto", "peca", "captura", "grafico", "logo", "outro"],
+      "description": "foto=capturada · peca=arte finalizada · captura=screenshot · grafico=diagrama · logo=marca isolada"
+    },
+    "medium": {
+      "enum": ["fisico", "digital", "na"],
+      "description": "fisico=impresso ou objeto real · digital=arte de tela · na=não se aplica. Mockup impresso = peca + fisico."
+    },
+    "source": {"enum": ["camera", "gerado"], "description": "deduzido do EXIF"},
+    "caption": {"type": "string", "description": "uma frase objetiva, escrita pelo modelo de visão"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "scene": {"enum": ["interior", "exterior", "na"]},
+    "people": {"type": "integer", "minimum": 0},
+    "palette": {"type": "array", "items": {"type": "string"}, "description": "cores dominantes em hexadecimal"},
+    "has_text": {"type": "boolean", "description": "há texto embutido na imagem"},
+    "text": {"type": "string", "description": "OCR — vem pronto do Google Drive, não custa token"},
+    "labels": {"type": "array", "items": {"type": "string"}, "description": "labels crus do Google; ruidosos, guardados sem confiança"},
+    "hash": {"type": "string", "description": "md5 do arquivo; é o que torna a atualização incremental"},
+    "v": {"type": "integer", "const": 1}
+  }
+}

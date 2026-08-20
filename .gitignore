@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# credenciais — nunca, em hipótese alguma
+*.env
+!exemplo/*.env
+token.json
+google-oauth.json
+client_secret*.json
+
+# trabalho local
+.lupa-cache/
+*.tmp
