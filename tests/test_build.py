@@ -318,3 +318,173 @@ class TestByEntity(IndexTestCase):
     def test_a_collection_with_no_names_creates_no_directory(self):
         self.write()
         self.assertFalse((self.dir / "by-entity").exists())
+
+
+# --------------------------------------------------------------------------
+# A proper name is not a tag. A tag comes from a controlled vocabulary and is a
+# lowercase word; an entity arrives written the way a designer wrote it on a
+# piece, and nine of the characters a designer may use are illegal in a Windows
+# file name.
+
+FORBIDDEN_ON_WINDOWS = '\\/:*?"<>|'
+
+RESERVED_ON_WINDOWS = ("CON", "PRN", "AUX", "NUL", "COM1", "LPT9")
+
+
+def piece(number, *entities, **fields):
+    """One catalog item — minimal, but complete enough for every writer."""
+    item = {"id": str(number), "file": f"{number:03}.jpg",
+            "url": f"https://drive/{number}", "kind": "design", "medium": "digital",
+            "orientation": "portrait", "has_text": True, "hash": f"h{number}",
+            "caption": "A piece", "tags": ["piece"], "text": "",
+            "entities": list(entities)}
+    item.update(fields)
+    return item
+
+
+class TestAnIllegalNameDoesNotKillTheRun(IndexTestCase):
+    """The first name below is the one that killed a paid run of 99 images.
+
+    `Pão Dourado | Noroeste` was read off a piece, went through the slug
+    unchanged, and reached `atomic_write` as `pao-dourado-|-noroeste.md.tmp`.
+    Windows answered WinError 123. The exception landed in `_write_by_entity`,
+    which runs after `catalog.jsonl` is on disk and before `INDEX.md` and
+    `MANIFEST.json` are — so the collection was described, billed, and left
+    without the manifest that makes the next run incremental. Rerunning would
+    have paid for all 99 images a second time.
+    """
+
+    def pages(self):
+        return sorted((self.dir / "by-entity").glob("*.md"))
+
+    def test_the_name_that_broke_the_real_run_is_written(self):
+        self.write(items=[piece(1, "Pão Dourado | Noroeste")])
+        self.assertEqual(len(self.pages()), 1)
+
+    def test_no_forbidden_character_reaches_a_file_name(self):
+        self.write(items=[piece(1, *(f"Marca {c} Filial" for c in FORBIDDEN_ON_WINDOWS))])
+        for page in self.pages():
+            self.assertFalse(set(page.stem) & set(FORBIDDEN_ON_WINDOWS), page.stem)
+
+    def test_a_control_character_reaches_no_file_name_either(self):
+        self.write(items=[piece(1, "Marca\tNova", "Marca\x07Velha")])
+        for page in self.pages():
+            self.assertFalse([c for c in page.stem if ord(c) < 32], page.stem)
+
+    def test_the_page_still_shows_the_name_as_it_was_written(self):
+        self.write(items=[piece(1, "Pão Dourado | Noroeste")])
+        self.assertIn("Pão Dourado | Noroeste",
+                      self.pages()[0].read_text(encoding="utf-8"))
+
+    def test_the_index_still_shows_the_name_as_it_was_written(self):
+        self.write(items=[piece(1, "Pão Dourado | Noroeste")])
+        self.assertIn("Pão Dourado | Noroeste",
+                      (self.dir / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_the_page_lists_the_images_that_carry_the_name(self):
+        self.write(items=[piece(1, "Pão Dourado | Noroeste"),
+                          piece(2, "Pão Dourado | Noroeste")])
+        text = self.pages()[0].read_text(encoding="utf-8")
+        self.assertIn("001.jpg", text)
+        self.assertIn("002.jpg", text)
+
+    def test_a_slash_in_a_name_is_a_separator_and_not_a_deletion(self):
+        """`CLNW 10/11`, also in the real collection: `clnw-1011` would be a
+        different address than the one anybody reading the piece would guess."""
+        self.write(items=[piece(1, "CLNW 10/11")])
+        self.assertEqual(self.pages()[0].stem, "clnw-10-11")
+
+    def test_a_reserved_device_name_is_never_used_as_a_file_name(self):
+        """`CON.md` is not a file on Windows, it is the console. The write looks
+        like it worked and nothing is on disk afterwards."""
+        self.write(items=[piece(n, name)
+                          for n, name in enumerate(RESERVED_ON_WINDOWS)])
+        stems = {page.stem.lower() for page in self.pages()}
+        self.assertEqual(len(stems), len(RESERVED_ON_WINDOWS), stems)
+        self.assertFalse(stems & {n.lower() for n in RESERVED_ON_WINDOWS}, stems)
+
+    def test_a_very_long_name_still_produces_an_openable_file(self):
+        self.write(items=[piece(1, "Campanha " + "Institucional " * 30)])
+        self.assertEqual(len(self.pages()), 1)
+        self.assertLessEqual(len(self.pages()[0].name), 120)
+
+    def test_a_second_run_does_not_sweep_away_the_pages_it_just_wrote(self):
+        """The orphan sweep matches file stems against the slugs it computed.
+        Any name the filesystem stores differently from what we asked for makes
+        the sweep delete, every run, the page it had just written."""
+        names = ["Pão Dourado | Noroeste", "CLNW 10/11", "Padaria Ltda.", "CON",
+                 "Marca <Nova>", 'Aspas "Duplas"']
+        items = [piece(n, name) for n, name in enumerate(names)]
+        self.write(items=items)
+        before = sorted(page.name for page in self.pages())
+        self.write(items=items)
+        self.assertEqual(before, sorted(page.name for page in self.pages()))
+        self.assertEqual(len(before), len(names), before)
+
+
+class TestTwoNamesNeverShareOnePage(IndexTestCase):
+    """Sanitising makes distinct names converge. Silence about that is the index
+    telling a client that images belong to a name they do not belong to."""
+
+    def pages(self):
+        return sorted((self.dir / "by-entity").glob("*.md"))
+
+    def both(self):
+        return [piece(1, "Pão Dourado | Noroeste"), piece(2, "Pão Dourado / Noroeste")]
+
+    def test_names_that_reduce_alike_get_one_page_each(self):
+        self.write(items=self.both())
+        self.assertEqual(len(self.pages()), 2, [page.stem for page in self.pages()])
+
+    def test_each_page_is_titled_with_its_own_name(self):
+        self.write(items=self.both())
+        titles = {page.read_text(encoding="utf-8").splitlines()[0]
+                  for page in self.pages()}
+        self.assertEqual(len(titles), 2, titles)
+
+    def test_no_image_lands_on_a_page_whose_name_it_does_not_carry(self):
+        self.write(items=self.both())
+        for page in self.pages():
+            text = page.read_text(encoding="utf-8")
+            self.assertEqual(text.count(".jpg"), 1, text)
+
+    def test_the_file_names_do_not_depend_on_the_order_the_items_arrived(self):
+        self.write(items=self.both())
+        names = sorted(page.name for page in self.pages())
+        self.write(items=[])                        # clears by-entity/
+        self.write(items=list(reversed(self.both())))
+        self.assertEqual(names, sorted(page.name for page in self.pages()))
+
+
+class TestTheWriterProtectsWhatWasAlreadyPaidFor(IndexTestCase):
+    """`by-entity/` is derived: every byte of it comes from `catalog.jsonl` and
+    costs nothing to rebuild. `MANIFEST.json` is not — without it the next run
+    describes, and pays for, the whole collection again. So a failure in the
+    derived part must not be able to cost the manifest.
+    """
+
+    def failing(self):
+        from unittest import mock
+        return mock.patch("lupa.build._write_by_entity",
+                          side_effect=OSError("[WinError 123] nome incorreto"))
+
+    def test_a_failure_writing_by_entity_still_leaves_the_paid_artifacts(self):
+        with self.failing():
+            with self.assertRaises(Exception):
+                self.write(items=[piece(1, "Alguma Marca")])
+        for name in ("catalog.jsonl", "INDEX.md", "MANIFEST.json"):
+            self.assertTrue((self.dir / name).exists(), name)
+
+    def test_the_manifest_left_behind_is_complete(self):
+        with self.failing():
+            with self.assertRaises(Exception):
+                self.write(items=[piece(1, "Alguma Marca"), piece(2, "Outra")])
+        manifest = json.loads((self.dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["total"], 2)
+        self.assertEqual(set(manifest["items"]), {"1", "2"})
+
+    def test_the_failure_is_not_swallowed(self):
+        with self.failing():
+            with self.assertRaises(Exception) as raised:
+                self.write(items=[piece(1, "Alguma Marca")])
+        self.assertIn("by-entity", str(raised.exception))

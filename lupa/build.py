@@ -5,6 +5,7 @@ Three reading levels, cheapest first:
   by-tag/*.md   → only the relevant tags
   catalog.jsonl → only when fields must be crossed
 """
+import hashlib
 import json
 import os
 import shutil
@@ -90,11 +91,91 @@ def atomic_write(path, text, encoding="utf-8"):
             os.fsync(handle.fileno())
 
 
+# The nine characters Windows refuses in a path component. POSIX only refuses
+# "/", but an index written on one machine is read on another all the time here,
+# so the stricter rule is the portable one — and it is the one that was missing.
+FORBIDDEN = set(chr(c) for c in (92, 47, 58, 42, 63, 34, 60, 62, 124))
+
+# Still devices, extension or not: CON.md is the console, not a file. The write
+# appears to succeed and nothing is on disk afterwards, which is the worst of
+# the two failure modes because it is silent.
+RESERVED_DEVICES = ({"con", "prn", "aux", "nul"}
+                    | {f"com{n}" for n in range(1, 10)}
+                    | {f"lpt{n}" for n in range(1, 10)})
+
+# A name read off a piece can be a whole slogan. 80 characters leave room for
+# the directory, the ".md" and a tie-breaker well inside the 260 that the
+# non-Unicode Windows APIs still enforce. Truncation can make two names collide;
+# entity_stems is what notices, so nothing has to be special-cased here.
+STEM_CAP = 80
+
+
 def tag_filename(tag):
-    """Turns a tag into a filename that is safe on any filesystem."""
+    """Turns a tag or a proper name into a file stem legal on any filesystem.
+
+    Shared by `by-tag/` and `by-entity/`, and the tag side is why it was too
+    permissive for the entity side. A tag comes from a controlled vocabulary and
+    is a lowercase word, so the only separators it ever needed were "/" and "_";
+    a proper name arrives written the way somebody wrote it on a piece, and
+    "Pão Dourado | Noroeste" walked straight through into a file name that
+    Windows rejects. The hole was always in this function — entities are simply
+    the first field that reaches it with punctuation in hand.
+
+    Every forbidden character becomes a separator instead of being deleted:
+    "A|B" must not read as "ab", which is the address of a different name.
+    """
     decomposed = unicodedata.normalize("NFKD", str(tag))
     stripped = "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
-    return "-".join(stripped.replace("/", " ").replace("_", " ").split())
+    cleaned = "".join(
+        " " if (c in FORBIDDEN or c == "_" or ord(c) < 32 or ord(c) == 127) else c
+        for c in stripped)
+    # Windows silently drops a trailing dot or space from a name, so a stem that
+    # ends in one is stored under a name we would never find again — and the
+    # orphan sweep would delete, every run, the page it had just written.
+    return "-".join(cleaned.split())[:STEM_CAP].rstrip("-. ")
+
+
+def _discriminator(name, length=6):
+    """A short, stable digest of the exact name — the tie-breaker between slugs.
+
+    Derived from the name alone, so the same name lands on the same file on
+    every run regardless of what else is in the collection or of the order the
+    items arrived in.
+    """
+    return hashlib.sha1(name.encode("utf-8")).hexdigest()[:length]
+
+
+def entity_stems(names):
+    """Gives every proper name a file stem that is legal, and is its own.
+
+    Sanitising makes distinct names converge: "A|B" and "A/B" both reduce to
+    "a-b", and so do a long name and its truncation. Until now the second one
+    simply inherited the first one's page and its title — no crash, no warning,
+    and an index quietly claiming that one client's images belong to another.
+    For a generic tag that folding is harmless; for a proper name it is the
+    index lying about whose archive this is.
+
+    The rule: among the names sharing a stem, the one that sorts first keeps the
+    clean stem and the others carry their own digest. Reserved device names and
+    names that sanitise down to nothing keep no clean stem at all — there the
+    digest goes in front, because Windows reads the device name from the start
+    of the file name and a suffix would not save it.
+    """
+    grouped = defaultdict(list)
+    for name in names:
+        grouped[tag_filename(name)].append(name)
+
+    stems = {}
+    for stem, group in grouped.items():
+        unusable = not stem or stem.split(".")[0] in RESERVED_DEVICES
+        for position, name in enumerate(sorted(set(group))):
+            if unusable:
+                stems[name] = f"{_discriminator(name)}-{stem}".rstrip("-")
+            elif position:
+                stems[name] = f"{stem}-{_discriminator(name)}"
+            else:
+                stems[name] = stem
+    return stems
 
 
 def backup(index_dir, now):
@@ -161,14 +242,16 @@ def _write_by_entity(index_dir, items):
     """
     folder = index_dir / "by-entity"
 
-    by_entity, written_as = defaultdict(list), {}
+    # Grouped by the name as written, never by the slug: the slug is an address,
+    # and two different names are allowed to want the same one. entity_stems is
+    # where that is settled, once, for the whole collection.
+    named = defaultdict(list)
     for item in items:
         for entity in item.get("entities") or []:
-            slug = tag_filename(entity)
-            if not slug:
-                continue
-            by_entity[slug].append(item)
-            written_as.setdefault(slug, entity)
+            named[entity].append(item)
+
+    stems = entity_stems(named)
+    by_entity = {stems[name]: name for name in named}
 
     if not by_entity:
         if folder.exists():
@@ -185,8 +268,9 @@ def _write_by_entity(index_dir, items):
         if stale.stem not in by_entity:
             stale.unlink()
 
-    for slug, members in by_entity.items():
-        lines = [f"# {written_as[slug]} — {len(members)} images", ""]
+    for slug, name in by_entity.items():
+        members = named[name]
+        lines = [f"# {name} — {len(members)} images", ""]
         lines += ["| file | type | orientation | caption | link |", "|---|---|---|---|---|"]
         for member in sorted(members, key=lambda x: x.get("file", "")):
             kind = f"{member.get('kind') or '?'}/{member.get('medium') or '?'}"
@@ -374,6 +458,15 @@ def _write_search_projection(index_dir, items):
         return  # the flat catalog still answers; the projection is an accelerator
 
 
+class DerivedIndexError(RuntimeError):
+    """A directory derived from the catalog could not be written.
+
+    Raised only after catalog.jsonl, INDEX.md and MANIFEST.json are on disk, so
+    it always means the same thing: the index is incomplete and nothing that
+    cost money was lost.
+    """
+
+
 def write_index(index_dir, collection, items, summary, model, cost_usd, now,
                 usage=None, batch=True):
     """Writes every index artifact. Idempotent: it rewrites the whole set.
@@ -387,11 +480,42 @@ def write_index(index_dir, collection, items, summary, model, cost_usd, now,
     index_dir.mkdir(parents=True, exist_ok=True)
     items = sorted(items, key=lambda item: item.get("file", ""))
 
+    # The order below is about money, not taste. Above the line is what was
+    # bought image by image and cannot be recomputed; MANIFEST.json belongs
+    # there because it is the file that makes the next run incremental. Below
+    # the line is derived: every byte of by-tag/ and by-entity/ comes out of
+    # catalog.jsonl and costs nothing to write again.
+    #
+    # It used to be the other way round. A single proper name with a "|" in it
+    # raised in _write_by_entity, which ran BEFORE INDEX.md and MANIFEST.json,
+    # on a real collection of 99 images that had already been described and
+    # billed. No manifest meant the next run would have seen an empty index and
+    # paid for all 99 a second time. The exception was right; its position was
+    # not.
     _write_catalog(index_dir, items)
-    _write_search_projection(index_dir, items)
-    _write_by_tag(index_dir, items)
-    _write_by_entity(index_dir, items)
     _write_index_md(index_dir, collection, items, now, model)
+    manifest = _write_manifest(index_dir, collection, items, model, now)
     _write_run_report(index_dir, collection, items, summary, cost_usd, model, now,
                       usage=usage, batch=batch)
-    return _write_manifest(index_dir, collection, items, model, now)
+
+    # Derived, and still not allowed to fail quietly — a directory the index
+    # points at and does not have is a broken index, and postcheck says so.
+    # What changes is only the blast radius: the failure is collected, the other
+    # directory is still attempted, and the raise happens once everything that
+    # cost money is durable. The rerun that fixes it describes nothing and is
+    # billed nothing.
+    broken = []
+    for name, write in (("by-tag", _write_by_tag), ("by-entity", _write_by_entity)):
+        try:
+            write(index_dir, items)
+        except Exception as error:
+            broken.append(f"{name}/ ({type(error).__name__}: {error})")
+    _write_search_projection(index_dir, items)
+
+    if broken:
+        raise DerivedIndexError(
+            "could not write " + " and ".join(broken) + ". catalog.jsonl, "
+            "INDEX.md and MANIFEST.json are already on disk: the descriptions "
+            "are paid for and kept, and running lupa again rebuilds these "
+            "directories from the catalog without describing a single image.")
+    return manifest
