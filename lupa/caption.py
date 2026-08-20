@@ -1,8 +1,10 @@
 """Vision-model description.
 
-The model is asked only about what metadata could not settle. It never
-transcribes text (Drive already did OCR for free) and never overrides what is
-already known.
+The model is asked only about what metadata could not settle, and never overrides
+what is already known. Transcribing the text in the image is part of the job: it
+used to be forbidden here, on the belief that Drive had already done OCR for free,
+and Drive never did — the field that was supposed to carry it does not exist in the
+API. The only party that can read the words is the one looking at the picture.
 """
 import json
 import re
@@ -16,6 +18,14 @@ LANGUAGE_NAMES = {"en": "English", "pt": "Brazilian Portuguese", "es": "Spanish"
                   "fr": "French", "de": "German", "it": "Italian"}
 
 INPUT_TOKENS_PER_IMAGE = 600   # 768px thumbnail plus prompt
+
+# A budget, not an average — it feeds the warning shown before spending, so it has
+# to cover the worst ordinary image rather than the typical one. Measured against
+# the 875 real responses of the first indexed collection: what the model returns
+# today is 313 chars ≈ 78 tokens once kind/medium are always asked. `has_text` adds
+# about 4, and the transcription is capped at 60 words in the prompt below, which is
+# ≈ 90 tokens of Portuguese. 78 + 4 + 90 = 172, so the 200 this repository has always
+# quoted still covers the transcription, and no price moves because of it.
 OUTPUT_TOKENS_PER_IMAGE = 200
 
 # Price per 1M tokens, per model — (input, output). Batch mode is exactly half on
@@ -129,6 +139,12 @@ def build_prompt(meta, language=DEFAULT_LANGUAGE):
         '  "scene": "indoor", "outdoor" or "na".',
         '  "people": number of visible people (0 if none).',
         '  "palette": 2 to 4 dominant colors as hex codes.',
+        '  "has_text": true when words are part of the image — a headline, a caption',
+        "     bar, a printed piece. false for incidental text: a small logo, a street",
+        "     sign, a nameplate, a label on equipment.",
+        '  "text": the words visible in the image, transcribed exactly.',
+        '     Stop at 60 words: transcribe the largest and most prominent first.',
+        '     "" when there are none. Never invent what you cannot read.',
     ]
 
     # The kind is only asked about when metadata could not settle it.
@@ -145,7 +161,6 @@ def build_prompt(meta, language=DEFAULT_LANGUAGE):
 
     lines += [
         "",
-        "Do NOT transcribe the text in the image — it has already been extracted.",
         "Describe composition, light, color and style. Be concrete, not poetic.",
     ]
     return "\n".join(lines)
@@ -169,6 +184,17 @@ def parse_response(text):
         return json.loads(cleaned[start:end + 1])
     except json.JSONDecodeError as error:
         raise InvalidResponse(f"malformed JSON: {error}") from error
+
+
+def _as_bool(value):
+    """A boolean out of whatever JSON the model felt like writing.
+
+    `bool("false")` is True, which is how a model that answers in strings turns every
+    image into one with text. The words are checked before the fallback.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
 
 
 def _clean_tags(raw):
@@ -207,9 +233,9 @@ def merge(meta, vision):
         "scene": vision.get("scene") or "na",
         "people": int(vision.get("people") or 0),
         "palette": list(vision.get("palette") or []),
-        "has_text": bool(meta.get("has_text")),
-        "text": meta.get("ocr_text") or "",       # OCR from Drive, free
-        "labels": list(meta.get("labels") or []),  # raw Google labels
+        # Both from the model, and only from the model: metadata cannot see.
+        "has_text": _as_bool(vision.get("has_text")),
+        "text": str(vision.get("text") or "").strip(),
         "hash": meta.get("hash"),
     }
 

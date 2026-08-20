@@ -33,13 +33,13 @@ class FakeModel:
         self.calls.append(item["id"])
         return {"caption": f"description of {item['file']}",
                 "tags": ["shared-tag", item["id"]],
-                "scene": "indoor", "people": 0, "palette": ["#000000"]}
+                "scene": "indoor", "people": 0, "palette": ["#000000"],
+                "has_text": True, "text": f"words on {item['id']}"}
 
 
 def a_file(file_id, digest, name=None):
     return {"id": file_id, "file": name or f"{file_id}.png", "hash": digest,
             "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
-            "ocr_text": "TEXT " * 10, "labels": [],
             "url": f"https://example.invalid/{file_id}", "trashed": False, "size": 100}
 
 
@@ -60,6 +60,34 @@ class PipelineTestCase(unittest.TestCase):
     def catalog(self):
         lines = (self.dir / "catalog.jsonl").read_text().strip().splitlines()
         return [json.loads(line) for line in lines if line.strip()]
+
+
+class TestTheTextReachesTheCatalog(PipelineTestCase):
+    """The whole path, end to end: model → merge → catalog.jsonl.
+
+    Every unit on this route was fixed separately; this is the one that would have
+    caught the original defect from the outside, where it actually hurt — 875 rows
+    written with has_text false and text empty, and nobody looking at a unit.
+    """
+
+    def test_what_the_model_read_in_the_image_is_what_gets_written(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        row = self.catalog()[0]
+        self.assertIs(row["has_text"], True)
+        self.assertEqual(row["text"], "words on a")
+
+    def test_a_model_that_sees_no_text_writes_a_false_and_an_empty_string(self):
+        quiet = lambda item, image, mime: {"caption": "c", "tags": ["t"]}
+        self.execute(FakeSource([a_file("a", "1")]), mode="index", describe=quiet)
+        row = self.catalog()[0]
+        self.assertIs(row["has_text"], False)
+        self.assertEqual(row["text"], "")
+
+    def test_the_two_fields_keep_the_types_every_reader_already_expects(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        row = self.catalog()[0]
+        self.assertIsInstance(row["has_text"], bool)
+        self.assertIsInstance(row["text"], str)
 
 
 class TestFirstRun(PipelineTestCase):

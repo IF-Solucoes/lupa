@@ -61,13 +61,48 @@ class TestDriveCredentials(unittest.TestCase):
             self.assertFalse(has_blocker(c))
 
 
+class TestNothingPromisesOcrThatDriveNeverGave(unittest.TestCase):
+    """The preflight is the last screen before money is spent. It cannot lie there.
+
+    It told everyone that a Drive collection arrives "with OCR", and advised moving a
+    local folder to Drive to get it. Drive returns no OCR — the field it was supposed
+    to come from is not in the API — so the advice bought nothing and the promise was
+    the defect repeated at the checkout.
+    """
+
+    def _every_sentence(self, checks):
+        return " ".join(f"{c.name} {c.message or ''} {c.how_to_fix or ''}"
+                        for c in checks).lower()
+
+    def test_a_drive_collection_is_not_advertised_as_carrying_ocr(self):
+        c = diagnose(drive_target(), env={"GEMINI_API_KEY": "x"}, existing_files={"a"})
+        self.assertNotIn("ocr", self._every_sentence(c))
+
+    def test_a_local_folder_is_not_told_it_is_missing_ocr(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = diagnose(local_target(d), env={"GEMINI_API_KEY": "x"}, existing_files=set())
+        self.assertNotIn("ocr", self._every_sentence(c))
+
+    def test_the_mounted_drive_advice_no_longer_sells_ocr(self):
+        c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},
+                     existing_files=set())
+        self.assertNotIn("ocr", self._every_sentence(c))
+
+    def test_but_the_reasons_that_are_real_survive(self):
+        c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},
+                     existing_files=set())
+        advice = [x for x in c if x.name == "collection source"][0].how_to_fix
+        self.assertIn("link", advice.lower())
+        self.assertIn("id", advice.lower())
+
+
 class TestMountedDrive(unittest.TestCase):
     def test_a_mounted_drive_folder_raises_an_explanatory_warning(self):
         c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},
                          existing_files=set())
         warning = [x for x in c if x.name == "collection source"][0]
         self.assertEqual(warning.status, WARNING)
-        self.assertIn("OCR", warning.how_to_fix)
+        self.assertIn("shareable", warning.how_to_fix)
 
     def test_the_warning_does_not_block_the_run(self):
         c = diagnose(local_target("/mnt/g/My Drive/Clients"), env={"GEMINI_API_KEY": "x"},

@@ -1,7 +1,8 @@
 """A collection in a folder on disk. Same interface as the Drive source.
 
-It needs no credentials, but it also gets no free OCR — over a local folder the
-vision model has to work a little harder.
+It needs no credentials, and it is not the poor relation: Drive hands back exactly
+the same things here — geometry, EXIF, a hash — because the free OCR it was once
+believed to add never existed.
 """
 import hashlib
 from pathlib import Path
@@ -49,8 +50,6 @@ class LocalSource:
                 "size": info.st_size,
                 "w": width, "h": height,
                 "exif": camera_exif(header),
-                "ocr_text": "",   # no free lunch from Drive here
-                "labels": [],
                 "url": entry.as_uri(),
                 "trashed": False,
             })

@@ -33,33 +33,48 @@ class TestSource(unittest.TestCase):
                          "generated")
 
 
-class TestTextInImage(unittest.TestCase):
-    def test_long_ocr_sets_has_text(self):
-        self.assertTrue(classify({"w": 1080, "h": 1350, "ocr_text": "MIGRATION " * 30})["has_text"])
-
-    def test_empty_ocr_clears_has_text(self):
-        self.assertFalse(classify({"w": 4032, "h": 3024, "ocr_text": ""})["has_text"])
-
-    def test_residual_ocr_does_not_count_as_text(self):
-        # two stray words are OCR noise, not a designed piece
-        self.assertFalse(classify({"w": 4032, "h": 3024, "ocr_text": "Sony A7"})["has_text"])
-
-
-class TestDeterministicKind(unittest.TestCase):
-    def test_camera_without_text_is_a_photo(self):
-        r = classify({"w": 4032, "h": 3024, "exif": {"Make": "Canon"}, "ocr_text": ""})
-        self.assertEqual(r["kind"], "photo")
-        self.assertEqual(r["medium"], "na")
-
-    def test_generated_png_with_lots_of_text_is_a_digital_design(self):
-        r = classify({"w": 1080, "h": 1350, "mime": "image/png", "ocr_text": "CRITERIA " * 40})
-        self.assertEqual(r["kind"], "design")
-        self.assertEqual(r["medium"], "digital")
-
-    def test_ambiguous_case_returns_none_for_the_model_to_settle(self):
-        # a camera photo WITH lots of text: could be a printed piece photographed
-        r = classify({"w": 4032, "h": 3024, "exif": {"Make": "Canon"}, "ocr_text": "SALE " * 40})
+class TestNothingIsTypedWithoutLookingAtIt(unittest.TestCase):
+    def test_every_kind_is_left_for_the_model_to_settle(self):
+        # a camera photo may be a printed piece photographed; metadata cannot tell
+        r = classify({"w": 4032, "h": 3024, "exif": {"Make": "Canon"}})
         self.assertIsNone(r["kind"])
+        self.assertIsNone(r["medium"])
+
+
+class TestTextIsNoLongerMetadata(unittest.TestCase):
+    """`has_text` used to be decided here, from a field Drive never sent.
+
+    It came out False for all 875 images of the first real collection. The vision
+    model decides it now — it is the only party that can actually see the image — so
+    the heuristic must not answer a question it has no data for.
+    """
+
+    def test_it_does_not_claim_to_know_whether_there_is_text(self):
+        self.assertNotIn("has_text", classify({"w": 1080, "h": 1350}))
+
+    def test_a_camera_photo_is_no_longer_typed_without_anyone_looking_at_it(self):
+        # 510 of 875 images went straight to photo/na on this branch alone, which is
+        # also how a photographed printed banner became a photo.
+        settled = classify({"w": 4032, "h": 3024, "exif": {"Make": "Canon"}})
+        self.assertIsNone(settled["kind"])
+        self.assertIsNone(settled["medium"])
+
+    def test_a_generated_png_is_not_typed_either(self):
+        settled = classify({"w": 1080, "h": 1350, "mime": "image/png"})
+        self.assertIsNone(settled["kind"])
+        self.assertIsNone(settled["medium"])
+
+    def test_a_leftover_ocr_text_key_changes_nothing(self):
+        # an old caller may still pass it; it must not resurrect the dead branch
+        settled = classify({"w": 1080, "h": 1350, "ocr_text": "SALE " * 40})
+        self.assertNotIn("has_text", settled)
+        self.assertIsNone(settled["kind"])
+
+    def test_what_stays_free_stays_free(self):
+        settled = classify({"w": 6000, "h": 4000, "exif": {"Make": "Canon"}})
+        self.assertEqual(settled["source"], "camera")
+        self.assertEqual(settled["aspect"], "3:2")
+        self.assertEqual(settled["orientation"], "landscape")
 
 
 if __name__ == "__main__":

@@ -1,38 +1,8 @@
 """Reading Drive: parsing the metadata the API returns."""
+import json
 import unittest
-from lupa.drive import split_ocr_and_labels, normalize_file, folder_query
 
-REAL_SNIPPET = (
-    "MIGRATION\n\nPutting off modernization\n\nout of fear of downtime is also a risk.\n"
-    "\n  \n  \nImage labels: \\[Bridge; Cable-stayed bridge; Technology; Diagram\\]"
-)
-
-
-class TestSnippet(unittest.TestCase):
-    def test_it_extracts_the_ocr_text_without_the_labels(self):
-        ocr, _ = split_ocr_and_labels(REAL_SNIPPET)
-        self.assertIn("MIGRATION", ocr)
-        self.assertNotIn("Image labels", ocr)
-        self.assertNotIn("Bridge", ocr)
-
-    def test_it_extracts_the_label_list(self):
-        _, labels = split_ocr_and_labels(REAL_SNIPPET)
-        self.assertEqual(labels, ["Bridge", "Cable-stayed bridge", "Technology", "Diagram"])
-
-    def test_a_snippet_without_labels_returns_an_empty_list(self):
-        ocr, labels = split_ocr_and_labels("just text here")
-        self.assertEqual(ocr, "just text here")
-        self.assertEqual(labels, [])
-
-    def test_an_empty_snippet_does_not_crash(self):
-        self.assertEqual(split_ocr_and_labels(""), ("", []))
-
-    def test_a_missing_snippet_does_not_crash(self):
-        self.assertEqual(split_ocr_and_labels(None), ("", []))
-
-    def test_unescaped_labels_work_too(self):
-        _, labels = split_ocr_and_labels("txt\nImage labels: [Food; Table]")
-        self.assertEqual(labels, ["Food", "Table"])
+from lupa.drive import FIELDS, folder_query, normalize_file
 
 
 class TestNormalization(unittest.TestCase):
@@ -67,11 +37,6 @@ class TestNormalization(unittest.TestCase):
 
     def test_a_trashed_file_is_flagged(self):
         self.assertTrue(normalize_file({"id": "x", "name": "a.png", "trashed": True})["trashed"])
-
-    def test_it_carries_ocr_and_labels_from_the_snippet(self):
-        entry = normalize_file({"id": "x", "name": "a.png", "contentSnippet": REAL_SNIPPET})
-        self.assertIn("MIGRATION", entry["ocr_text"])
-        self.assertIn("Bridge", entry["labels"])
 
 
 class TestQuery(unittest.TestCase):
@@ -180,3 +145,86 @@ class TestCycleSafety(unittest.TestCase):
         }
         found = list_images(FakeDriveService(looping), "a")
         self.assertEqual(sorted(f["id"] for f in found), ["i1", "i2"])
+
+
+# --- the guard that would have caught this at the first commit ---
+
+try:
+    from googleapiclient.discovery_cache import get_static_doc
+except ImportError:                                    # core runs without the Google libs
+    get_static_doc = None
+
+
+def _parse_field_spec(spec):
+    """`FIELDS` → {parent_or_None: {names}}, the way the Drive API reads it.
+
+    "files(id,name,imageMediaMetadata(width)),nextPageToken" becomes
+    {None: {"files", "nextPageToken"}, "files": {"id", "name", "imageMediaMetadata"},
+     "imageMediaMetadata": {"width"}}.
+    """
+    groups, parent, name, stack = {None: set()}, None, "", []
+    for char in spec + ",":
+        if char == "(":
+            stack.append(parent)
+            parent = name
+            groups.setdefault(parent, set())
+            name = ""
+        elif char == ")":
+            if name:
+                groups[parent].add(name)
+            parent, name = stack.pop(), ""
+        elif char == ",":
+            if name:
+                groups[parent].add(name)
+            name = ""
+        elif not char.isspace():
+            name += char
+    return groups
+
+
+@unittest.skipIf(get_static_doc is None, "google-api-python-client is not installed")
+class TestEveryRequestedFieldExistsInTheAPI(unittest.TestCase):
+    """`fields=` is not a wish list: an unknown name is an HTTP 400 on every listing.
+
+    A name that is never requested at all is worse — it is silent. lupa read
+    `contentSnippet` off every listing response since the first commit; the Drive v3
+    File schema has no such property and the request never asked for one, so
+    `ocr_text` was "" and `labels` was [] in every index ever written, and `has_text`
+    was False for all 875 images of the first real collection. The discovery document
+    shipped inside google-api-python-client is the authority on what exists, so it is
+    what this test reads.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.file_schema = json.loads(get_static_doc("drive", "v3"))["schemas"]["File"]
+
+    def test_every_name_in_fields_is_a_real_property_at_its_level(self):
+        groups = _parse_field_spec(FIELDS)
+        unknown = []
+
+        def walk(schema, parent):
+            known = set(schema.get("properties") or {})
+            for name in sorted(groups.get(parent, ())):
+                if name not in known:
+                    unknown.append(f"{parent}.{name}")
+                    continue
+                if name in groups:
+                    walk(schema["properties"][name], name)
+
+        walk(self.file_schema, "files")   # files(...) holds File properties
+        self.assertEqual(unknown, [], f"lupa asks Drive for {unknown}, which the "
+                                      f"File schema does not have")
+
+    def test_the_phantom_field_is_named_here_so_it_cannot_come_back(self):
+        self.assertNotIn("contentSnippet", set(self.file_schema["properties"]))
+        self.assertNotIn("contentSnippet", FIELDS)
+
+
+class TestNoPhantomFieldsInTheNormalizedItem(unittest.TestCase):
+    def test_it_invents_no_ocr_text(self):
+        # Drive never sent it. An empty string here reads like an answer.
+        self.assertNotIn("ocr_text", normalize_file({"id": "x", "name": "a.png"}))
+
+    def test_it_invents_no_labels(self):
+        self.assertNotIn("labels", normalize_file({"id": "x", "name": "a.png"}))

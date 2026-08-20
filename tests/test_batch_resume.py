@@ -20,7 +20,7 @@ COLLECTION = "if-editorial"
 def an_item(file_id):
     return {"id": file_id, "file": f"{file_id}.png", "hash": f"h-{file_id}",
             "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
-            "ocr_text": "", "labels": [], "trashed": False, "size": 100,
+            "trashed": False, "size": 100,
             "url": f"https://example.invalid/{file_id}"}
 
 

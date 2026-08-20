@@ -4,12 +4,13 @@ from lupa.caption import (build_prompt, parse_response, merge, estimate_cost,
                           format_cost, InvalidResponse, MODEL_PRICES, resolve_pricing)
 from lupa.gemini import DEFAULT_MODEL
 
+# `kind` pre-settled: classify() no longer does this, but merge() must still honour a
+# caller that knows better than the model, and build_prompt() must still stay quiet
+# about a field already decided.
 PHOTO_META = {"file": "table.jpg", "kind": "photo", "medium": "na", "source": "camera",
-              "has_text": False, "aspect": "3:2", "orientation": "landscape",
-              "ocr_text": "", "labels": []}
+              "aspect": "3:2", "orientation": "landscape"}
 AMBIGUOUS_META = {"file": "banner.jpg", "kind": None, "medium": None, "source": "camera",
-                  "has_text": True, "aspect": "3:2", "orientation": "landscape",
-                  "ocr_text": "SALE", "labels": []}
+                  "aspect": "3:2", "orientation": "landscape"}
 
 VISION = {"caption": "Wooden table with bread", "tags": ["Food", "WOOD", "food"],
           "scene": "indoor", "people": 0, "palette": ["#c8a06a"],
@@ -17,9 +18,6 @@ VISION = {"caption": "Wooden table with bread", "tags": ["Food", "WOOD", "food"]
 
 
 class TestPrompt(unittest.TestCase):
-    def test_it_forbids_transcription_because_drive_already_did_ocr(self):
-        self.assertIn("do not transcribe", build_prompt(PHOTO_META).lower())
-
     def test_it_does_not_pay_the_model_to_list_objects(self):
         # Google labels are already free; asking again pays twice
         prompt = build_prompt(PHOTO_META).lower()
@@ -81,11 +79,54 @@ class TestMerge(unittest.TestCase):
     def test_tags_are_lowercased_and_deduplicated(self):
         self.assertEqual(sorted(merge(PHOTO_META, VISION)["tags"]), ["food", "wood"])
 
-    def test_the_drive_ocr_lands_in_the_text_field(self):
-        self.assertEqual(merge(AMBIGUOUS_META, VISION)["text"], "SALE")
-
     def test_a_missing_caption_does_not_crash(self):
         self.assertEqual(merge(PHOTO_META, {})["caption"], "")
+
+
+class TestTheModelSuppliesTheText(unittest.TestCase):
+    """`text` and `has_text` come from the only party that can see the image.
+
+    They used to come from Drive's `contentSnippet`, a field that does not exist in
+    the API — so both were dead on arrival, and the prompt actively forbade the one
+    party that could have filled them.
+    """
+
+    def test_the_prompt_no_longer_claims_the_text_was_already_extracted(self):
+        prompt = build_prompt(PHOTO_META).lower()
+        self.assertNotIn("do not transcribe", prompt)
+        self.assertNotIn("already been extracted", prompt)
+
+    def test_the_prompt_asks_for_the_flag_and_for_the_transcription(self):
+        prompt = build_prompt(PHOTO_META)
+        self.assertIn('"has_text"', prompt)
+        self.assertIn('"text"', prompt)
+
+    def test_the_transcription_is_bounded_so_the_output_cost_is_bounded(self):
+        self.assertIn("60 words", build_prompt(PHOTO_META))
+
+    def test_the_transcription_lands_in_the_text_field(self):
+        item = merge(PHOTO_META, dict(VISION, has_text=True, text="SALE 50% OFF"))
+        self.assertTrue(item["has_text"])
+        self.assertEqual(item["text"], "SALE 50% OFF")
+
+    def test_metadata_cannot_smuggle_text_in_any_more(self):
+        # ocr_text and has_text in the metadata are leftovers from the dead field
+        item = merge(dict(PHOTO_META, ocr_text="GHOST", has_text=True), {"caption": "x"})
+        self.assertEqual(item["text"], "")
+        self.assertIs(item["has_text"], False)
+
+    def test_the_word_false_in_a_string_is_not_true(self):
+        # a model answering JSON by hand writes "false" often enough to matter
+        self.assertIs(merge(PHOTO_META, dict(VISION, has_text="false"))["has_text"], False)
+        self.assertIs(merge(PHOTO_META, dict(VISION, has_text="true"))["has_text"], True)
+
+    def test_a_model_that_forgets_the_two_fields_does_not_crash(self):
+        item = merge(PHOTO_META, {"caption": "x"})
+        self.assertEqual(item["text"], "")
+        self.assertIs(item["has_text"], False)
+
+    def test_the_dead_google_labels_are_not_written_any_more(self):
+        self.assertNotIn("labels", merge(PHOTO_META, VISION))
 
 
 class TestCost(unittest.TestCase):

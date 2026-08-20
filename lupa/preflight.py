@@ -108,7 +108,8 @@ def diagnose(target, env, existing_files=None, index_exists=False, env_file=None
             "collection", OK,
             f'Google Drive folder · id {target.folder_id} · named "{target.name}"'))
         checks.append(Check("collection source", OK,
-                            "through the Drive API — with OCR and shareable links"))
+                            "through the Drive API — with shareable links "
+                            "and a stable id per file"))
     else:
         checks.append(Check(
             "collection", OK, f'local folder {target.path} · named "{target.name}"'))
@@ -118,16 +119,14 @@ def diagnose(target, env, existing_files=None, index_exists=False, env_file=None
                 "collection source", WARNING,
                 "this folder looks like Google Drive mounted on disk",
                 "It works as is. But if you paste the Drive folder URL "
-                "(.../drive/folders/<id>), lupa gets three things for free:\n"
-                "      · the OCR Google already ran — without it, text baked into "
-                "the images never reaches search\n"
+                "(.../drive/folders/<id>), lupa gets two things for free:\n"
                 "      · shareable https links, which Cowork and other people can open\n"
                 "      · an immutable id per file, so renaming the folder stops "
                 "forcing a full reindex"))
         else:
             checks.append(Check(
                 "collection source", OK,
-                "local folder — no free OCR, so the model works a little harder"))
+                "local folder — file:// links, so only this machine can open them"))
 
     # 2. Vision model key
     if env.get("GEMINI_API_KEY"):
