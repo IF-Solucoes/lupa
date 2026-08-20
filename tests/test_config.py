@@ -212,3 +212,61 @@ class TestEnvSearchChain(unittest.TestCase):
     def test_an_empty_chain_is_not_a_crash(self):
         from lupa.config import first_existing
         self.assertIsNone(first_existing([]))
+
+
+class TestOAuthToken(unittest.TestCase):
+    """The Google sign-in has to land somewhere by default.
+
+    Regression: with nothing configured the value was None, and the first Drive
+    run died inside Path(None).expanduser() long after preflight said it was fine.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_OAUTH_TOKEN")
+
+    def setUp(self):
+        import os
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+        self.tmp.close()
+        os.environ["LUPA_ENV"] = self.tmp.name
+
+    def tearDown(self):
+        import os
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def write_env(self, text):
+        Path(self.tmp.name).write_text(text, encoding="utf-8")
+
+    def test_the_default_lives_next_to_the_other_defaults(self):
+        from lupa.config import DEFAULT_OAUTH_TOKEN
+        self.assertEqual(DEFAULT_OAUTH_TOKEN, "~/.lupa/oauth_token.json")
+
+    def test_with_nothing_configured_it_falls_back_to_the_default(self):
+        from lupa.config import DEFAULT_OAUTH_TOKEN, environment
+        self.write_env("GEMINI_API_KEY=abc\n")
+        token = environment()["LUPA_OAUTH_TOKEN"]
+        self.assertEqual(Path(token), Path(DEFAULT_OAUTH_TOKEN).expanduser())
+
+    def test_the_default_comes_back_expanded(self):
+        from lupa.config import environment
+        self.write_env("GEMINI_API_KEY=abc\n")
+        self.assertNotIn("~", environment()["LUPA_OAUTH_TOKEN"])
+
+    def test_the_env_file_wins_over_the_default(self):
+        from lupa.config import environment
+        self.write_env("LUPA_OAUTH_TOKEN=/from/the/file.json\n")
+        self.assertEqual(Path(environment()["LUPA_OAUTH_TOKEN"]),
+                         Path("/from/the/file.json"))
+
+    def test_the_process_env_wins_over_the_file(self):
+        import os
+        from lupa.config import environment
+        self.write_env("LUPA_OAUTH_TOKEN=/from/the/file.json\n")
+        os.environ["LUPA_OAUTH_TOKEN"] = "/from/the/process.json"
+        self.assertEqual(Path(environment()["LUPA_OAUTH_TOKEN"]),
+                         Path("/from/the/process.json"))

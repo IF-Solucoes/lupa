@@ -108,6 +108,13 @@ def connect(client_secret, token_path, with_credentials=False):
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
+    if not token_path:
+        # Never reached through config.environment(), which always fills this
+        # in. A caller that builds its own env deserves a sentence, not a
+        # TypeError from inside pathlib.
+        raise ValueError("no path to store the Google sign-in: "
+                         "LUPA_OAUTH_TOKEN is empty")
+
     token_path = Path(token_path).expanduser()
     credentials = None
     if token_path.exists():

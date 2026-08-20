@@ -287,7 +287,8 @@ LUPA_ENV=./project.env python3 -m lupa status
 | `LUPA_CONFIG` | `~/.lupa/collections.json` | saved collection registry |
 | `LUPA_INDEXES` | `~/.lupa/indexes` | local mirror of the indexes, read by the MCP |
 | `LUPA_STATE_DIR` | — | shortcut: sets the index mirror to `<dir>/indexes` |
-| `LUPA_OAUTH_CLIENT` / `LUPA_OAUTH_TOKEN` | — | Google Drive credentials |
+| `LUPA_OAUTH_CLIENT` | — | Google Drive OAuth client JSON, downloaded per person |
+| `LUPA_OAUTH_TOKEN` | `~/.lupa/oauth_token.json` | where the Google sign-in is stored after the first authorization |
 
 Nothing here needs to be edited by hand to get started: the first successful run
 registers the collection for you.

@@ -146,9 +146,16 @@ def command_index(args):
     root = config.resolve_index_root(os.environ, env)
 
     # When Drive can be asked what the folder is called, the name comes from
-    # there — nobody deserves a collection named "15fvulcdmebag7t2tm".
+    # there — nobody deserves a collection named "15fvulcdmebag7t2tm". Only when
+    # a session is already stored: this probe is cosmetic, and a cosmetic probe
+    # may never trigger the interactive login — that would open a browser before
+    # preflight has printed the sentence explaining why, and even under --dry-run.
+    # Without a stored session the name stays id-derived and the sign-in happens
+    # later, in build_source, after the report.
     client = env.get("LUPA_OAUTH_CLIENT")
-    if target.kind == "drive" and client and Path(client).expanduser().exists():
+    token = env.get("LUPA_OAUTH_TOKEN")
+    if (target.kind == "drive" and client and Path(client).expanduser().exists()
+            and token and Path(token).expanduser().exists()):
         try:
             from lupa.drive import connect, folder_name
             from lupa.target import slugify
