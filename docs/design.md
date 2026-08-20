@@ -143,7 +143,27 @@ The ambiguous case is a **Google Drive for Desktop folder mounted on disk**. It 
 local and is Drive. lupa detects it (`lupa/mount.py`) and preflight explains what the
 URL would buy — **without blocking**. The choice is informed, not mandatory.
 
-### 5.6 Preflight is mandatory
+### 5.6 A collection is a starting point, not a flat folder
+
+Indexing begins at one folder and branches into everything beneath it, at any depth.
+Both sources behave the same way: the local source walks with `rglob`, and the Drive
+source walks the folder tree breadth-first (`walk_folders`), since Drive's
+`'<id>' in parents` query only ever returns direct children.
+
+Three rules keep the walk honest:
+
+- the `file` field carries the path relative to the collection root, so two images
+  named `cover.png` in different folders remain distinguishable;
+- a `_lupa/` folder is never entered — a collection does not index its own index;
+- visited folder ids are tracked, so a Drive shortcut loop cannot hang the walk.
+
+`--no-recursive` restricts a run to the top level.
+
+Because collections are registered by name and indexed under separate directories,
+one installation serves every project: index a folder once and it is searchable from
+anywhere, either by name or across all collections at once.
+
+### 5.7 Preflight is mandatory
 
 It is not a flag; it is the first stage of every run. It:
 

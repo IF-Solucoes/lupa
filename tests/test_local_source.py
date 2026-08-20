@@ -71,3 +71,23 @@ class TestLocalSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecursionSwitch(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        (self.folder / "top.png").write_bytes(png())
+        (self.folder / "sub").mkdir()
+        (self.folder / "sub" / "deep.png").write_bytes(png())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_it_branches_by_default(self):
+        ids = [f["id"] for f in LocalSource(self.folder).list()]
+        self.assertEqual(sorted(ids), ["sub/deep.png", "top.png"])
+
+    def test_recursion_can_be_turned_off(self):
+        ids = [f["id"] for f in LocalSource(self.folder, recursive=False).list()]
+        self.assertEqual(ids, ["top.png"])

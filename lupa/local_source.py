@@ -14,11 +14,13 @@ HEADER_BYTES = 128 * 1024  # enough for dimensions and EXIF
 
 
 class LocalSource:
-    def __init__(self, path):
+    def __init__(self, path, recursive=True):
         self.root = Path(path).expanduser().resolve()
+        self.recursive = recursive
 
     def _candidates(self):
-        for entry in sorted(self.root.rglob("*")):
+        pattern = "**/*" if self.recursive else "*"
+        for entry in sorted(self.root.glob(pattern)):
             if not entry.is_file() or entry.suffix.lower() not in EXTENSIONS:
                 continue
             relative = entry.relative_to(self.root)

@@ -38,6 +38,34 @@ question is answered over text.
 
 From the second run on, only what changed costs anything.
 
+### A collection is a starting point, not a flat folder
+
+You give lupa one folder and it branches out from there: every subfolder, at any
+depth, is part of the collection. A file's `file` field carries its path relative to
+that root (`Campaigns/2026/story.png`), so two images named `cover.png` in different
+folders stay distinguishable. The walk never enters a `_lupa/` folder, and a
+shortcut loop cannot hang it.
+
+Pass `--no-recursive` to index only the top level.
+
+### Many collections, many projects
+
+lupa is installed once and serves every project you work in. Each collection is
+registered by name and indexed under its own directory, so indexing a folder once
+makes it searchable from anywhere:
+
+```bash
+python3 -m lupa index ~/clients/acme/photos        # saved as "photos"
+python3 -m lupa index "https://drive.google.com/drive/folders/1a2B3c"
+python3 -m lupa status                             # every collection, anywhere
+
+lupa_search(query="warm light", collection="photos")   # one collection
+lupa_search(query="warm light")                        # all of them at once
+```
+
+Point `LUPA_INDEXES` at a path inside a repository if you want that project to keep
+its own separate index instead of the shared one.
+
 ### A local folder and a Drive folder are not the same thing
 
 You can index a folder on disk — including the one Google Drive for Desktop

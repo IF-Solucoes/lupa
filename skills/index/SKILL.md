@@ -18,6 +18,10 @@ description: >-
 Turns a folder of images into a text index, so that agents can find references
 **without opening the images**. Each image is described once in its life.
 
+A collection is a **starting point**: lupa branches into every subfolder beneath the
+one you point at, at any depth, and never enters a `_lupa/` index folder. Pass
+`--no-recursive` when the user explicitly wants only the top level.
+
 **It holds no opinion.** It knows nothing about clients, brands, or editorial
 direction. Judging fitness belongs to the consuming skill.
 

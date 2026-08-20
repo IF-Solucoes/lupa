@@ -39,11 +39,11 @@ def resolve_entry(entry, registry):
     return resolve_target(entry)
 
 
-def build_source(target, env, cache):
+def build_source(target, env, cache, recursive=True):
     """Returns (source, service). The service exists only for Drive targets."""
     if target.kind == "local":
         from lupa.local_source import LocalSource
-        return LocalSource(target.path), None
+        return LocalSource(target.path, recursive=recursive), None
 
     from lupa.drive import connect, download, list_images
     from lupa.image import mime_of
@@ -52,7 +52,7 @@ def build_source(target, env, cache):
 
     class DriveSource:
         def list(self):
-            return list_images(service, target.folder_id)
+            return list_images(service, target.folder_id, recursive=recursive)
 
         def fetch(self, file_id):
             local = Path(cache) / file_id
@@ -108,7 +108,8 @@ def command_index(args):
     if has_blocker(checks):
         sys.exit("Fix the items marked ✗ and run again. Nothing was spent.\n")
 
-    source, service = build_source(target, env, root / ".cache" / target.name)
+    source, service = build_source(target, env, root / ".cache" / target.name,
+                                  recursive=not args.no_recursive)
 
     preview = run_pipeline(collection=target.name, index_dir=index_dir, source=source,
                            describe=lambda *a: {}, mode="update", now=utc_stamp(),
@@ -202,6 +203,8 @@ def main(argv=None):
         entry.add_argument("target",
                            help="Drive URL, folder id, local path, or a saved name")
         entry.add_argument("--dry-run", action="store_true", help="stop after the plan")
+        entry.add_argument("--no-recursive", action="store_true",
+                           help="index only the top level, not the subfolders")
         entry.add_argument("--yes", "-y", action="store_true", help="do not ask")
         entry.add_argument("--no-push", action="store_true",
                            help="do not publish the index to Drive")

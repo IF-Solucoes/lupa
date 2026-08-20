@@ -14,9 +14,19 @@ FIELDS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
           "webViewLink,imageMediaMetadata(width,height,cameraMake,cameraModel)),nextPageToken")
 
 
+INDEX_FOLDER = "_lupa"
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
 def folder_query(folder_id):
-    """Images only, this folder only, nothing from the trash."""
+    """Images directly inside this folder, nothing from the trash."""
     return (f"'{folder_id}' in parents and mimeType contains 'image/' "
+            f"and trashed = false")
+
+
+def subfolder_query(folder_id):
+    """Subfolders directly inside this folder."""
+    return (f"'{folder_id}' in parents and mimeType = '{FOLDER_MIME}' "
             f"and trashed = false")
 
 
@@ -110,18 +120,57 @@ def connect(client_secret, token_path):
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
-def list_images(service, folder_id):
-    """Metadata for every image in the folder. Downloads nothing."""
-    files, page = [], None
+def _list_page(service, query, fields):
+    """Runs one paginated listing to exhaustion."""
+    entries, page = [], None
     while True:
         response = service.files().list(
-            q=folder_query(folder_id), fields=FIELDS, pageSize=1000,
-            pageToken=page, supportsAllDrives=True, includeItemsFromAllDrives=True,
+            q=query, fields=fields, pageSize=1000, pageToken=page,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute()
-        files += [normalize_file(entry) for entry in response.get("files", [])]
+        entries += response.get("files", [])
         page = response.get("nextPageToken")
         if not page:
-            return files
+            return entries
+
+
+def walk_folders(service, root_id):
+    """Breadth-first walk of the folder tree, rooted at root_id.
+
+    Yields (folder_id, relative_prefix). The collection's own index folder is
+    never entered, and a shortcut loop cannot hang the walk.
+    """
+    queue = [(root_id, "")]
+    seen = {root_id}
+    while queue:
+        folder_id, prefix = queue.pop(0)
+        yield folder_id, prefix
+
+        for child in _list_page(service, subfolder_query(folder_id),
+                                "files(id,name),nextPageToken"):
+            child_id, name = child.get("id"), child.get("name") or ""
+            if name == INDEX_FOLDER or child_id in seen:
+                continue
+            seen.add(child_id)
+            queue.append((child_id, f"{prefix}{name}/"))
+
+
+def list_images(service, folder_id, recursive=True):
+    """Metadata for every image at or below the folder. Downloads nothing.
+
+    A collection is a starting point, not a flat directory: by default the walk
+    branches into every subfolder. `file` carries the path relative to the root,
+    so two images named cover.png in different folders stay distinguishable.
+    """
+    branches = walk_folders(service, folder_id) if recursive else [(folder_id, "")]
+
+    files = []
+    for current_id, prefix in branches:
+        for entry in _list_page(service, folder_query(current_id), FIELDS):
+            item = normalize_file(entry)
+            item["file"] = f"{prefix}{item['file']}"
+            files.append(item)
+    return files
 
 
 def download(service, file_id, destination):

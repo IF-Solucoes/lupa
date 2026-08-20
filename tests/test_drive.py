@@ -86,3 +86,97 @@ class TestQuery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeDriveService:
+    """A Drive stand-in: answers files().list() from a folder tree in memory.
+
+    tree: {folder_id: {"folders": [(id, name)], "images": [(id, name)]}}
+    """
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.queries = []
+
+    def files(self):
+        return self
+
+    def list(self, q=None, **_):
+        self.queries.append(q)
+        parent = q.split("'")[1]
+        node = self.tree.get(parent, {})
+        if "mimeType = 'application/vnd.google-apps.folder'" in q:
+            entries = [{"id": fid, "name": name,
+                        "mimeType": "application/vnd.google-apps.folder"}
+                       for fid, name in node.get("folders", [])]
+        else:
+            entries = [{"id": fid, "name": name, "mimeType": "image/png",
+                        "md5Checksum": f"hash-{fid}",
+                        "imageMediaMetadata": {"width": 100, "height": 100}}
+                       for fid, name in node.get("images", [])]
+        return FakeRequest({"files": entries})
+
+
+class FakeRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def execute(self):
+        return self.payload
+
+
+TREE = {
+    "root": {"folders": [("sub", "Campaigns"), ("idx", "_lupa")],
+             "images": [("a", "cover.png")]},
+    "sub": {"folders": [("deep", "2026")], "images": [("b", "post.png")]},
+    "deep": {"folders": [], "images": [("c", "story.png")]},
+    "idx": {"folders": [], "images": [("z", "contact-sheet.png")]},
+}
+
+
+class TestRecursiveListing(unittest.TestCase):
+    def setUp(self):
+        from lupa.drive import list_images
+        self.service = FakeDriveService(TREE)
+        self.found = list_images(self.service, "root")
+
+    def test_it_reaches_images_in_subfolders(self):
+        self.assertIn("b", [f["id"] for f in self.found])
+
+    def test_it_reaches_images_several_levels_down(self):
+        self.assertIn("c", [f["id"] for f in self.found])
+
+    def test_it_still_lists_the_root(self):
+        self.assertIn("a", [f["id"] for f in self.found])
+
+    def test_the_file_name_carries_the_relative_path(self):
+        deep = [f for f in self.found if f["id"] == "c"][0]
+        self.assertEqual(deep["file"], "Campaigns/2026/story.png")
+
+    def test_a_root_file_keeps_its_bare_name(self):
+        root = [f for f in self.found if f["id"] == "a"][0]
+        self.assertEqual(root["file"], "cover.png")
+
+    def test_it_never_descends_into_its_own_index_folder(self):
+        self.assertNotIn("z", [f["id"] for f in self.found])
+
+    def test_a_flat_collection_still_works(self):
+        from lupa.drive import list_images
+        flat = FakeDriveService({"only": {"folders": [], "images": [("x", "a.png")]}})
+        self.assertEqual([f["id"] for f in list_images(flat, "only")], ["x"])
+
+    def test_recursion_can_be_turned_off(self):
+        from lupa.drive import list_images
+        shallow = list_images(FakeDriveService(TREE), "root", recursive=False)
+        self.assertEqual([f["id"] for f in shallow], ["a"])
+
+
+class TestCycleSafety(unittest.TestCase):
+    def test_a_folder_loop_does_not_hang(self):
+        from lupa.drive import list_images
+        looping = {
+            "a": {"folders": [("b", "B")], "images": [("i1", "1.png")]},
+            "b": {"folders": [("a", "A")], "images": [("i2", "2.png")]},
+        }
+        found = list_images(FakeDriveService(looping), "a")
+        self.assertEqual(sorted(f["id"] for f in found), ["i1", "i2"])
