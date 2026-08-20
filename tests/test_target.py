@@ -1,4 +1,5 @@
 """The user says it any way they like; lupa figures it out."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,11 +35,16 @@ class TestDriveUrl(unittest.TestCase):
 
 class TestLocalFolder(unittest.TestCase):
     def setUp(self):
+        self.cwd = os.getcwd()
         self.tmp = tempfile.TemporaryDirectory()
         self.folder = Path(self.tmp.name) / "Client Photos"
         self.folder.mkdir()
 
     def tearDown(self):
+        try:
+            os.chdir(self.cwd)
+        except OSError:
+            os.chdir(tempfile.gettempdir())
         self.tmp.cleanup()
 
     def test_existing_path_becomes_a_local_target(self):
@@ -53,7 +59,6 @@ class TestLocalFolder(unittest.TestCase):
         self.assertEqual(resolve_target("~").kind, "local")
 
     def test_relative_path_works(self):
-        import os
         os.chdir(self.folder.parent)
         self.assertEqual(resolve_target("Client Photos").kind, "local")
 
