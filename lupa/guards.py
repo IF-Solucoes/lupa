@@ -78,13 +78,13 @@ def _linux_started_at(pid):
     Linux only; on any other POSIX this returns None and the caller does without.
     """
     try:
-        raw = (Path("/proc") / str(pid) / "stat").read_text()
+        raw = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
         # The comm field is parenthesised and may itself contain spaces, so
         # everything countable lives after the last ')'. starttime is field 22.
         after = raw[raw.rindex(")") + 2:].split()
         ticks = float(after[19])
         boot = 0.0
-        for line in (Path("/proc") / "stat").read_text().splitlines():
+        for line in (Path("/proc") / "stat").read_text(encoding="utf-8").splitlines():
             if line.startswith("btime "):
                 boot = float(line.split()[1])
                 break
@@ -160,8 +160,10 @@ def check_before_indexing(index_dir, collection, rebuild=False, confirm=None):
         return
 
     try:
-        data = json.loads(manifest.read_text())
-    except (json.JSONDecodeError, OSError):
+        # The manifest carries the client's own file names. utf-8 is what
+        # wrote it; cp1252 is what Windows would read it back as.
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         data = {}
     total = data.get("total", "?")
     runs = data.get("runs", "?")
@@ -212,7 +214,7 @@ class Lock:
             self.on_notice(reason)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.stamp = {"pid": os.getpid(), "started": time.time()}
-        self.path.write_text(json.dumps(self.stamp))
+        self.path.write_text(json.dumps(self.stamp), encoding="utf-8")
         return self
 
     def __exit__(self, *_):
@@ -221,8 +223,8 @@ class Lock:
         file on the way out would then be deleting somebody else's lock -- which
         leaves a third run free to walk into an index two others are writing."""
         try:
-            held = json.loads(self.path.read_text())
-        except (json.JSONDecodeError, OSError, AttributeError):
+            held = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, AttributeError):
             held = None                    # unreadable or already gone: ours to clear
         if held is not None and held != self.stamp:
             self.on_notice(
@@ -238,10 +240,10 @@ class Lock:
         not, which the caller is expected to show: a lock that changes hands in
         silence is how a run ends up unprotected without anyone noticing."""
         try:
-            record = json.loads(self.path.read_text())
+            record = json.loads(self.path.read_text(encoding="utf-8"))
             started = record.get("started", 0)
             pid = record.get("pid")
-        except (json.JSONDecodeError, OSError, AttributeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, AttributeError):
             return (f"Reclaiming the lock at {self.path}: the file cannot be read, "
                     "so there is nobody left to wait for.")
 

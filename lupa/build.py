@@ -398,8 +398,14 @@ def _write_manifest(index_dir, collection, items, model, now):
     runs = 0
     if path.exists():
         try:
-            runs = json.loads(path.read_text()).get("runs", 0)
-        except (json.JSONDecodeError, OSError):
+            # utf-8, said out loud: without it Windows decodes cp1252, and a
+            # client folder called "4 - Fotos & Vídeos" ends the run here —
+            # after every image in it was described and billed.
+            runs = json.loads(path.read_text(encoding="utf-8")).get("runs", 0)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            # UnicodeDecodeError is caught for the same reason: this read only
+            # carries a counter forward, and no counter is worth killing a paid
+            # run over. Everything else in the manifest is rewritten below.
             runs = 0
 
     manifest = {

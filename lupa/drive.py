@@ -109,7 +109,9 @@ def connect(client_secret, token_path, with_credentials=False):
                 str(Path(client_secret).expanduser()), SCOPES)
             credentials = flow.run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(credentials.to_json())
+        # google-auth reads this file back as utf-8 whatever the host locale is,
+        # so it is the encoding to write it in.
+        token_path.write_text(credentials.to_json(), encoding="utf-8")
 
     service = build("drive", "v3", credentials=credentials, cache_discovery=False)
     return (service, credentials) if with_credentials else service
