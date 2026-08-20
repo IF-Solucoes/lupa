@@ -293,7 +293,26 @@ def command_status(_args):
     print(Server(config.resolve_index_root(os.environ, env)).tool_status({}))
 
 
+def prepare_output_streams():
+    """A Windows console is cp1252, and the report is not.
+
+    Without this, `lupa index` dies with UnicodeEncodeError on the first line of
+    the preflight report. stderr counts too: the blocker message leaves through
+    it. Requiring the person to prefix PYTHONIOENCODING=utf-8 is not a fix.
+
+    A stream that was replaced — a pipe, a StringIO, a test double — may not
+    offer reconfigure. Then there is nothing to do, and nothing to say about it.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    prepare_output_streams()
+
     parser = argparse.ArgumentParser(
         prog="lupa", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
