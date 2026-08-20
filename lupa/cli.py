@@ -373,6 +373,65 @@ def _settle_inflight_batch(args, index_dir, collection, model, plan):
         sys.exit(f"\n✋ {error}\n")
 
 
+def _nothing_found(target, recursive=True):
+    """What a FIRST run with an empty plan actually means, said out loud.
+
+    An empty plan reads two completely different ways depending on whether an
+    index already exists, and until now both got the same line — "Nothing changed
+    since the last run" — including on a collection that had never had a run.
+
+    The silent case is the expensive one. Drive answers `files.list` for a folder
+    the account is not allowed to see with an empty list, not with an error: point
+    lupa at a client folder nobody shared with you and it looked, character for
+    character, like a successful incremental no-op. Same for the wrong subfolder.
+    """
+    from lupa.local_source import EXTENSIONS
+
+    if target.kind == "drive":
+        subfolder = ("the right folder, wrong level — the images live in a "
+                     "subfolder and the walk was told not to descend "
+                     "(--no-recursive)"
+                     if not recursive else
+                     "the right folder, wrong level — this is a subfolder that "
+                     "holds nothing itself, or a folder whose images are all in "
+                     "Drive's trash")
+        causes = [
+            "the wrong folder — the URL points at another folder, or at a "
+            "shortcut rather than the folder itself",
+            subfolder,
+            "no permission to read it — Drive answers a listing you are not "
+            "allowed to see with an EMPTY LIST, never with an error, so a folder "
+            "that was never shared with this account looks exactly like this",
+            "the folder really has nothing to describe — only files whose type "
+            "is a supported image get listed, so documents, videos and Google "
+            "Docs stay invisible even when the folder looks full",
+        ]
+    else:
+        formats = " · ".join(sorted(extension.lstrip(".") for extension in EXTENSIONS))
+        causes = [
+            "the wrong folder — the path points somewhere else",
+            "the right folder, wrong level — the images live in a subfolder"
+            + ("" if recursive else ", and --no-recursive was passed"),
+            "no permission to read it, or a Google Drive folder mounted on disk "
+            "that has not synced this folder yet — either way the listing comes "
+            "back empty instead of failing",
+            f"the folder really has no image in a supported format ({formats})",
+        ]
+
+    lines = [
+        "✋ Nothing found to index — this is NOT a success.",
+        "",
+        f'  This is the first run for "{target.name}", and the collection came '
+        f"back with no image at all.",
+        "  Nothing was indexed, nothing was described, nothing was spent.",
+        "",
+        "  What causes this, most common first:",
+    ]
+    lines += [f"    · {cause}" for cause in causes]
+    lines += ["", "  Check what the folder actually contains, then run again.", ""]
+    return "\n".join(lines)
+
+
 def command_index(args):
     env = config.environment()
     registry = config.read_config(file_env=env)
@@ -455,8 +514,24 @@ def command_index(args):
     resume_batch = _settle_inflight_batch(args, index_dir, target.name, model, plan)
 
     if plan.empty:
-        print("Nothing changed since the last run. Nothing to do, nothing to pay.\n")
-        return
+        # Two different events wore the same sentence. With an index on disk an
+        # empty plan is the incremental working — the promise of the tool. Without
+        # one, nothing was found at all, and saying "since the last run" about a
+        # run that never happened is how a folder nobody had permission to read
+        # got reported as a successful indexing.
+        if index_exists:
+            print("Nothing changed since the last run. "
+                  "Nothing to do, nothing to pay.\n")
+            return
+
+        print(_nothing_found(target, recursive=not args.no_recursive))
+        # --dry-run keeps its 0: it inspected, and it never claimed to have done
+        # anything. A real run must not, because the exit code is the only part
+        # of this a script — or an agent following the skill — actually reads.
+        if args.dry_run:
+            print("(--dry-run: stopping here, nothing was written)\n")
+            return
+        raise SystemExit(1)
 
     if args.dry_run:
         print("(--dry-run: stopping here, nothing was written)\n")

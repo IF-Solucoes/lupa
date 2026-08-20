@@ -44,6 +44,12 @@ Deliberately out of scope:
   Drive, not a property of a file, so it cannot be harvested per image at listing
   time — it would be a second search path, in Drive's index rather than in ours.
   **lupa does not use it today.**
+- A skill for the reading face. `skills/cowork/SKILL.md` shipped one until it was
+  retired: lupa is invoked from Claude Code, where the MCP answers and `lupa-search`
+  is the way in, so the skill had no caller. It was also the third copy of the field
+  taxonomy — after `skills/search/SKILL.md` and the generated `INDEX.md` — and had
+  already drifted away from both. What the reading face needs is written where it is
+  read, inside `INDEX.md`.
 
 ## 4. Findings that shaped the design
 
@@ -83,8 +89,10 @@ Four verified facts, each with a direct consequence:
 
 - **Claude Code face** — a plugin with an embedded MCP server. Runs all verbs and
   does the heavy work: fetching thumbnails, calling Gemini, writing the index.
-- **Cowork / claude.ai face** — a `SKILL.md` that teaches an agent to **read** the
-  index through the Drive connector. It executes no code.
+- **The reading face** — any agent that can open the files, through the Drive
+  connector or otherwise, and **reads** the index instead of the images. It
+  executes no code, and lupa ships nothing for it (see §3): the reading
+  instructions travel inside `INDEX.md`, with the index they describe.
 
 The contract between them is the files under `_lupa/`. Neither face knows the other.
 
@@ -229,7 +237,7 @@ The repository is public and cannot assume its author's environment:
 - No platform-specific shell calls and no absolute paths from one machine.
 - The MCP server is stdio and dependency-free — the client starts it. No port, no
   daemon, no service.
-- The Cowork face executes nothing. Where there is no Python, the index still reads.
+- The reading face executes nothing. Where there is no Python, the index still reads.
 - Every path is configurable by environment variable, with a portable default under
   `~/.lupa`.
 
@@ -293,7 +301,7 @@ into new work on the next reconciliation.
 
 Three points that only a real collection can confirm:
 
-1. **Reading the index through the connector.** The Cowork face depends on the Drive
+1. **Reading the index through the connector.** The reading face depends on the Drive
    connector reading `.md` and `.jsonl` as text. That is the expected behavior, but
    it deserves verification before the face is promised — it is success criterion 6.
 2. **Searching inside the catalog without code.** Drive's own `search_files` is not

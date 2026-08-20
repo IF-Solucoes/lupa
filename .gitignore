@@ -19,6 +19,6 @@ client_secret*.json
 *.db.tmp
 .thumbs/
 
-# o pacote da face Cowork é um artefato de release, versionado de propósito
+# o pacote do plugin é um artefato de release, versionado de propósito
 !dist/
 !dist/*.zip

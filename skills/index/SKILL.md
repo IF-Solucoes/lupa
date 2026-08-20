@@ -66,8 +66,18 @@ Before any spending, the command prints a diagnosis and a plan:
 - **`!` (warning)** — it still works. The common case: the folder given is Drive
   mounted on disk. Mention what the user would gain by pasting the Drive URL
   (shareable https links, a stable id per file) without forcing them to change.
-- **Plan** — how many images will be described and what it costs. If it reports
-  "Nothing changed", the run is over: report that and stop.
+- **Plan** — how many images will be described and what it costs. An empty plan
+  means one of two opposite things, and they must never be reported alike:
+  - **`Nothing changed since the last run`** — the incremental working as promised.
+    The run is over: report it and stop. It exits 0.
+  - **`✋ Nothing found to index`** — the collection came back with no image at all.
+    **Do not report this as success.** It exits non-zero. Relay the listed causes
+    verbatim — the likeliest on Drive is that the folder was never shared with this
+    account, because Drive answers a listing you may not see with an empty list
+    rather than an error. Nothing was indexed and nothing was spent.
+
+**The exit code outranks the text.** Any non-zero exit from `lupa index` is a failed
+run, however friendly some line above it reads.
 
 To see only the plan: `--dry-run`.
 To run unattended: `--yes` — but only after you have read the plan.
