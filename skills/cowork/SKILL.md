@@ -30,6 +30,12 @@ only if the user needs visual confirmation.
 breakdown by type, and the **tag vocabulary with counts**. It is the map. Always
 read it first.
 
+That vocabulary is **the 40 most frequent tags, and the file does not say so**: a
+collection with 546 tags shows 40 of them. Never conclude from that list that the
+collection has nothing about a subject — list `_lupa/by-tag/` and look for the tag
+there. The tags are written in the index's language, English by default, whatever
+language the collection or the user speaks: search `cat`, not `gato`.
+
 **2. Pick the relevant tags and read `_lupa/by-tag/<tag>.md`.** Each file is a
 ready-made table: file, type, orientation, caption, and link. For most requests this
 is the whole job — stop here.
@@ -69,5 +75,10 @@ read it, and there it is produced.
   and updating it belongs to lupa running in Claude Code.
 - **New images do not appear** until someone runs `lupa update`. `INDEX.md` shows the
   date of the last run — check it before claiming something does not exist.
-- **Local-folder collections have no OCR.** Their `text` field is empty, so text
-  baked into artwork is not searchable there.
+- **`text` is a transcription, not OCR from Drive.** Whatever `has_text` and `text`
+  say was written by the vision model that described the image; Google Drive gives
+  lupa no text at all. A Drive collection and a local one are equal here.
+- **An index built before that was fixed says `has_text: false` on every image**,
+  with `text` empty, because lupa read a Drive field that does not exist. If nothing
+  in the whole catalog has text, that is what you are looking at — say so instead of
+  reporting that the collection has no printed material.

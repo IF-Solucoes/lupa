@@ -38,17 +38,27 @@ Deliberately out of scope:
 - A global controlled tag vocabulary.
 - Embeddings and vector search. The text index covers the use case.
 - Editing the collection's files. lupa only creates the files under `_lupa/`.
+- Drive's own OCR, which exists but is not a field. Google does read the text inside
+  images and makes it searchable: `q="fullText contains 'sua consulta'"` returns
+  `Externo.jpg`, whose name contains none of those words. It is a query against
+  Drive, not a property of a file, so it cannot be harvested per image at listing
+  time — it would be a second search path, in Drive's index rather than in ours.
+  **lupa does not use it today.**
 
 ## 4. Findings that shaped the design
 
 Four verified facts, each with a direct consequence:
 
-1. **Drive already returns OCR and labels, for free.** The connector exposes, in
-   `contentSnippet`, the text extracted from the image plus an `Image labels` list.
-   The OCR is excellent. The labels are generic noise — on a post about
-   prioritization, Google suggested "Heineken" and "Beryllium".
-   → *Consequence:* the vision model never pays for OCR or object detection. It
-   fills only the gap: composition, palette, light, style.
+1. **Drive returns no text to lupa — and never did.** This project was built on the
+   opposite belief: that `contentSnippet` carried the OCR Google had already run,
+   plus an `Image labels` list, for free. That field is not part of the Drive v3
+   `File` resource. Pulling a real image with `fields="*"` returns 45 properties and
+   not one of them holds text, so `text` was empty and `has_text` false on 875 of the
+   875 images of the first real collection, from the first commit onward.
+   → *Consequence:* the only party that can read the words in a picture is the one
+   looking at it. The vision model transcribes them (~90 extra output tokens per
+   image, inside the budget already quoted), and nothing may be classified from text
+   before the model has answered. `labels` is retired.
 
 2. **The Drive connector cannot edit existing files.** It can only create new files
    in a chosen folder.
@@ -112,15 +122,21 @@ A **closed** taxonomy — an open one is precisely the noise we are avoiding:
 There is no `mockup`. A mockup is `design` + `physical`. The consumer decides
 whether that is past work or raw material for a new render.
 
-Classification starts deterministic; the vision model only breaks ties:
+Metadata asserts what it can prove; everything that needs eyes waits for the model:
 
 | Signal | Cost | Decides |
 |---|---|---|
+| Geometry (`w`/`h`) | zero | `aspect` and `orientation` — arithmetic |
 | EXIF (`Make`/`Model`) | zero | camera present → `source: camera`; absent → `generated` |
-| Aspect ratio | zero | 4:5, 9:16, 1:1 → social design; large 3:2, 4:3 → photograph |
-| OCR density | zero | lots of text → `design`/`diagram`; none → `photo` |
-| Format | zero | large PNG without EXIF → design export |
-| Vision model | already paid | `medium` (physical vs digital) and the ambiguous cases |
+| Vision model | already paid | `kind`, `medium`, `has_text`, the transcribed `text`, caption, tags, palette |
+
+The heuristics that used to sit between the two — text density decides
+`design`/`diagram`, aspect ratio decides social design — were removed rather than
+tuned. Both hinged on `has_text`, which came from the Drive field that does not
+exist and was therefore false everywhere: `camera` alone then decided `photo`/`na`
+for 510 of the 875 images of the first real collection, a printed banner among them.
+A heuristic answering a question it has no data for does not save money, it writes a
+wrong answer into the index.
 
 ### 5.5 Where the collection comes from — and why that still matters
 
@@ -129,13 +145,13 @@ bare id, a local path, or the name of a collection already indexed. lupa resolve
 nobody needs to know what a `folder_id` is, and nobody edits a config file by hand
 (the first successful run registers the collection).
 
-The origin is not neutral, though. Through the Drive API you get three things the
+The origin is not neutral, though. Through the Drive API you get two things the
 disk cannot provide:
 
 | | folder on disk | Drive API |
 |---|---|---|
 | describing, classifying, searching, incremental updates | identical | identical |
-| OCR and labels for free | absent | in the metadata, zero cost |
+| text found inside the images | the model transcribes it | the model transcribes it — Drive contributes none |
 | link in the result | `file://…`, useless off-machine | `https://…`, opens anywhere |
 | file identity | the path: renaming forces a reindex | immutable `id` |
 

@@ -10,6 +10,7 @@ from pathlib import Path
 DEFAULT_ENV = "~/.lupa/lupa.env"
 DEFAULT_CONFIG = "~/.lupa/collections.json"
 DEFAULT_INDEX_ROOT = "~/.lupa/indexes"
+DEFAULT_OAUTH_TOKEN = "~/.lupa/oauth_token.json"
 
 # Where the settings file is looked for, in order. A shared file comes first so
 # that one .env can serve several tools belonging to the same person; the
@@ -22,7 +23,12 @@ ENV_SEARCH_CHAIN = (
 
 SETTINGS = ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG", "LUPA_STATE_DIR",
             "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN",
-            "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES")
+            "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES",
+            # Prices per 1M tokens, overriding the table in caption.py. Listed here
+            # so a price Google changed is an edit to a settings file rather than a
+            # release of this package — and so the file, not only the process
+            # environment, is read for them.
+            "LUPA_INPUT_PRICE", "LUPA_OUTPUT_PRICE")
 
 
 def first_existing(candidates):
@@ -78,11 +84,19 @@ def read_env(path=None):
 
 
 def environment(path=None):
-    """Values from the file, with the process environment layered on top."""
+    """Values from the file, with the process environment layered on top.
+
+    LUPA_OAUTH_TOKEN is filled in here rather than at each reader: preflight and
+    execution both receive this dict, so a default resolved once cannot diverge
+    between what the report inspects and what the run writes to. There is no
+    LUPA_OAUTH_CLIENT default on purpose — that JSON is downloaded per person.
+    """
     values = read_env(path)
     for key in SETTINGS:
         if os.environ.get(key):
             values[key] = os.environ[key]
+    values["LUPA_OAUTH_TOKEN"] = str(
+        Path(values.get("LUPA_OAUTH_TOKEN") or DEFAULT_OAUTH_TOKEN).expanduser())
     return values
 
 

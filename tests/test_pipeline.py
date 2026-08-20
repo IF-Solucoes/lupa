@@ -33,13 +33,13 @@ class FakeModel:
         self.calls.append(item["id"])
         return {"caption": f"description of {item['file']}",
                 "tags": ["shared-tag", item["id"]],
-                "scene": "indoor", "people": 0, "palette": ["#000000"]}
+                "scene": "indoor", "people": 0, "palette": ["#000000"],
+                "has_text": True, "text": f"words on {item['id']}"}
 
 
 def a_file(file_id, digest, name=None):
     return {"id": file_id, "file": name or f"{file_id}.png", "hash": digest,
             "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
-            "ocr_text": "TEXT " * 10, "labels": [],
             "url": f"https://example.invalid/{file_id}", "trashed": False, "size": 100}
 
 
@@ -54,12 +54,40 @@ class PipelineTestCase(unittest.TestCase):
 
     def execute(self, source, mode="update", **kw):
         return run(collection="if-editorial", index_dir=self.dir, source=source,
-                   describe=self.model, mode=mode,
+                   describe=kw.pop("describe", self.model), mode=mode,
                    now=kw.pop("now", "2026-08-20T10-00-00"), **kw)
 
     def catalog(self):
         lines = (self.dir / "catalog.jsonl").read_text().strip().splitlines()
         return [json.loads(line) for line in lines if line.strip()]
+
+
+class TestTheTextReachesTheCatalog(PipelineTestCase):
+    """The whole path, end to end: model → merge → catalog.jsonl.
+
+    Every unit on this route was fixed separately; this is the one that would have
+    caught the original defect from the outside, where it actually hurt — 875 rows
+    written with has_text false and text empty, and nobody looking at a unit.
+    """
+
+    def test_what_the_model_read_in_the_image_is_what_gets_written(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        row = self.catalog()[0]
+        self.assertIs(row["has_text"], True)
+        self.assertEqual(row["text"], "words on a")
+
+    def test_a_model_that_sees_no_text_writes_a_false_and_an_empty_string(self):
+        quiet = lambda item, image, mime: {"caption": "c", "tags": ["t"]}
+        self.execute(FakeSource([a_file("a", "1")]), mode="index", describe=quiet)
+        row = self.catalog()[0]
+        self.assertIs(row["has_text"], False)
+        self.assertEqual(row["text"], "")
+
+    def test_the_two_fields_keep_the_types_every_reader_already_expects(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        row = self.catalog()[0]
+        self.assertIsInstance(row["has_text"], bool)
+        self.assertIsInstance(row["text"], str)
 
 
 class TestFirstRun(PipelineTestCase):
@@ -223,3 +251,107 @@ class TestParallelism(PipelineTestCase):
                      describe=flaky, mode="index", now="2026-08-20T10-00-00", workers=4)
         self.assertEqual(len(result["failures"]), 1)
         self.assertEqual(len(self.catalog()), 5)
+
+
+class TestFailuresAreNotSuccess(PipelineTestCase):
+    """A run that failed must not read like a run that worked.
+
+    Regression, 2026-08-20: 875 of 875 images failed with the same HTTP 404 (the
+    model had been retired) and the run reported `+875 added`, printed `Done.`
+    first and the failure last, and exited 0.
+    """
+
+    RETIRED = ("HTTP 404: gemini-2.5-flash-lite is no longer available; "
+               "use gemini-3.5-flash-lite instead")
+
+    def always_fails(self, message=RETIRED):
+        def describe(item, image, mime):
+            raise RuntimeError(message)
+        return describe
+
+    def half_fails(self, message=RETIRED):
+        def describe(item, image, mime):
+            if item["id"] == "b":
+                raise RuntimeError(message)
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def test_a_failed_image_is_not_counted_as_added(self):
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = self.execute(source, mode="index", describe=self.half_fails())
+        self.assertIn("+1 added", result["summary"])
+        self.assertNotIn("+2 added", result["summary"])
+
+    def test_the_failures_are_counted_where_they_belong(self):
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = self.execute(source, mode="index", describe=self.half_fails())
+        self.assertIn("!1 failed", result["summary"])
+
+    def test_a_failed_image_reaches_neither_catalog_nor_manifest(self):
+        """What --retry-failed depends on: a failure leaves no state behind."""
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        self.execute(source, mode="index", describe=self.half_fails())
+        manifest = json.loads((self.dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(manifest["items"]), ["a"])
+        self.assertEqual([item["id"] for item in self.catalog()], ["a"])
+
+    def test_a_total_failure_is_announced_on_the_first_line(self):
+        source = FakeSource([a_file(letter, "1") for letter in "abc"])
+        result = self.execute(source, mode="index", describe=self.always_fails())
+        first = result["verdict"].splitlines()[0]
+        self.assertIn("3", first)
+        self.assertIn("failed", first.lower())
+
+    def test_the_repeated_error_is_named_on_that_first_line(self):
+        source = FakeSource([a_file(letter, "1") for letter in "abc"])
+        result = self.execute(source, mode="index", describe=self.always_fails())
+        first = result["verdict"].splitlines()[0]
+        self.assertIn("no longer available", first)
+
+    def test_a_total_failure_adds_nothing(self):
+        source = FakeSource([a_file(letter, "1") for letter in "abc"])
+        result = self.execute(source, mode="index", describe=self.always_fails())
+        self.assertIn("+0 added", result["summary"])
+
+    def test_a_partial_failure_is_not_a_total_one(self):
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = self.execute(source, mode="index", describe=self.half_fails())
+        self.assertIsNone(result["verdict"])
+
+    def test_a_healthy_run_keeps_the_counters_it_always_had(self):
+        source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        result = self.execute(source, mode="index")
+        self.assertEqual(result["summary"], result["plan"].summary())
+        self.assertEqual(result["summary"],
+                         "+2 added · ~0 changed · -0 removed · =0 unchanged")
+        self.assertIsNone(result["verdict"])
+
+    def test_a_dry_run_reports_the_plan_and_no_verdict(self):
+        source = FakeSource([a_file("a", "1")])
+        result = self.execute(source, mode="index", dry_run=True)
+        self.assertEqual(result["summary"], result["plan"].summary())
+        self.assertIsNone(result["verdict"])
+
+    def test_a_failed_re_description_keeps_the_paid_one_and_its_old_hash(self):
+        """Why --retry-failed still works: a failure records no new state.
+
+        The old description stays in the catalog, the OLD hash stays in the
+        manifest, and the next run therefore plans the image again on its own.
+        """
+        source = FakeSource([a_file("a", "1")])
+        self.execute(source, mode="index")
+        source.files[0] = a_file("a", "SECOND-VERSION")
+        result = self.execute(source, describe=self.always_fails())
+
+        self.assertEqual("+0 added · ~0 changed · -0 removed · =0 unchanged · !1 failed",
+                         result["summary"])
+        manifest = json.loads((self.dir / "MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual("1", manifest["items"]["a"]["hash"],
+                         "a failed re-description must not stamp the new hash")
+        again = self.execute(source, dry_run=True)
+        self.assertEqual(["a"], again["plan"].changed)
+
+    def test_a_lone_failure_is_not_written_as_all_1_images(self):
+        source = FakeSource([a_file("a", "1")])
+        result = self.execute(source, mode="index", describe=self.always_fails())
+        self.assertNotIn("1 images", result["verdict"])

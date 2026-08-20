@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from lupa.config import (read_env, find_collection, register_collection,
-                         target_from_registry, resolve_index_root)
+                         target_from_registry, resolve_index_root, SETTINGS)
 from lupa.target import Target
 
 
@@ -68,7 +68,7 @@ class TestRegistry(unittest.TestCase):
 
     def test_a_local_collection_stores_its_path(self):
         config = register_collection({}, Target("local", "photos", path=Path("/tmp/photos")))
-        self.assertEqual(config["collections"][0]["path"], "/tmp/photos")
+        self.assertEqual(config["collections"][0]["path"], str(Path("/tmp/photos")))
 
     def test_registering_twice_does_not_duplicate(self):
         target = Target("drive", "if", folder_id="ABC")
@@ -93,14 +93,15 @@ class TestRegistry(unittest.TestCase):
 
 class TestIndexRoot(unittest.TestCase):
     def test_an_explicit_variable_wins(self):
-        self.assertEqual(str(resolve_index_root({"LUPA_INDEXES": "/tmp/x"}, {})), "/tmp/x")
+        self.assertEqual(str(resolve_index_root({"LUPA_INDEXES": "/tmp/x"}, {})),
+                         str(Path("/tmp/x")))
 
     def test_the_state_dir_gets_an_indexes_subfolder(self):
         root = resolve_index_root({}, {"LUPA_STATE_DIR": "/home/u/.lupa/state"})
-        self.assertEqual(str(root), "/home/u/.lupa/state/indexes")
+        self.assertEqual(str(root), str(Path("/home/u/.lupa/state/indexes")))
 
     def test_with_nothing_set_it_falls_back_to_a_portable_default(self):
-        self.assertTrue(str(resolve_index_root({}, {})).endswith(".lupa/indexes"))
+        self.assertTrue(str(resolve_index_root({}, {})).endswith(str(Path(".lupa/indexes"))))
 
 
 if __name__ == "__main__":
@@ -113,7 +114,7 @@ class TestPathRedirection(unittest.TestCase):
     def test_the_env_file_can_redirect_the_registry(self):
         from lupa.config import config_path
         path = config_path({"LUPA_CONFIG": "/somewhere/collections.json"})
-        self.assertEqual(str(path), "/somewhere/collections.json")
+        self.assertEqual(str(path), str(Path("/somewhere/collections.json")))
 
     def test_the_process_env_still_wins_over_the_file(self):
         import os
@@ -121,13 +122,13 @@ class TestPathRedirection(unittest.TestCase):
         os.environ["LUPA_CONFIG"] = "/from/process.json"
         try:
             path = config_path({"LUPA_CONFIG": "/from/file.json"})
-            self.assertEqual(str(path), "/from/process.json")
+            self.assertEqual(str(path), str(Path("/from/process.json")))
         finally:
             del os.environ["LUPA_CONFIG"]
 
     def test_without_either_it_uses_the_portable_default(self):
         from lupa.config import config_path
-        self.assertTrue(str(config_path({})).endswith(".lupa/collections.json"))
+        self.assertTrue(str(config_path({})).endswith(str(Path(".lupa/collections.json"))))
 
 
 class TestPathConsistency(unittest.TestCase):
@@ -147,7 +148,7 @@ class TestPathConsistency(unittest.TestCase):
             env_file = handle.name
         os.environ["LUPA_ENV"] = env_file
         try:
-            self.assertEqual(str(config_path()), "/from/the/file.json")
+            self.assertEqual(str(config_path()), str(Path("/from/the/file.json")))
         finally:
             del os.environ["LUPA_ENV"]
             Path(env_file).unlink(missing_ok=True)
@@ -171,9 +172,11 @@ class TestEnvSearchChain(unittest.TestCase):
     def test_the_chain_has_the_shared_env_before_the_tool_specific_one(self):
         from lupa.config import ENV_SEARCH_CHAIN
         paths = [str(p) for p in ENV_SEARCH_CHAIN]
-        self.assertTrue(any(p.endswith(".francis/.env") for p in paths))
-        shared = next(i for i, p in enumerate(paths) if p.endswith(".francis/.env"))
-        own = next(i for i, p in enumerate(paths) if p.endswith(".lupa/lupa.env"))
+        shared_suffix = str(Path(".francis/.env"))
+        own_suffix = str(Path(".lupa/lupa.env"))
+        self.assertTrue(any(p.endswith(shared_suffix) for p in paths))
+        shared = next(i for i, p in enumerate(paths) if p.endswith(shared_suffix))
+        own = next(i for i, p in enumerate(paths) if p.endswith(own_suffix))
         self.assertLess(shared, own)
 
     def test_an_explicit_variable_still_wins_over_the_chain(self):
@@ -209,3 +212,70 @@ class TestEnvSearchChain(unittest.TestCase):
     def test_an_empty_chain_is_not_a_crash(self):
         from lupa.config import first_existing
         self.assertIsNone(first_existing([]))
+
+
+class TestOAuthToken(unittest.TestCase):
+    """The Google sign-in has to land somewhere by default.
+
+    Regression: with nothing configured the value was None, and the first Drive
+    run died inside Path(None).expanduser() long after preflight said it was fine.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_OAUTH_TOKEN")
+
+    def setUp(self):
+        import os
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+        self.tmp.close()
+        os.environ["LUPA_ENV"] = self.tmp.name
+
+    def tearDown(self):
+        import os
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def write_env(self, text):
+        Path(self.tmp.name).write_text(text, encoding="utf-8")
+
+    def test_the_default_lives_next_to_the_other_defaults(self):
+        from lupa.config import DEFAULT_OAUTH_TOKEN
+        self.assertEqual(DEFAULT_OAUTH_TOKEN, "~/.lupa/oauth_token.json")
+
+    def test_with_nothing_configured_it_falls_back_to_the_default(self):
+        from lupa.config import DEFAULT_OAUTH_TOKEN, environment
+        self.write_env("GEMINI_API_KEY=abc\n")
+        token = environment()["LUPA_OAUTH_TOKEN"]
+        self.assertEqual(Path(token), Path(DEFAULT_OAUTH_TOKEN).expanduser())
+
+    def test_the_default_comes_back_expanded(self):
+        from lupa.config import environment
+        self.write_env("GEMINI_API_KEY=abc\n")
+        self.assertNotIn("~", environment()["LUPA_OAUTH_TOKEN"])
+
+    def test_the_env_file_wins_over_the_default(self):
+        from lupa.config import environment
+        self.write_env("LUPA_OAUTH_TOKEN=/from/the/file.json\n")
+        self.assertEqual(Path(environment()["LUPA_OAUTH_TOKEN"]),
+                         Path("/from/the/file.json"))
+
+    def test_the_process_env_wins_over_the_file(self):
+        import os
+        from lupa.config import environment
+        self.write_env("LUPA_OAUTH_TOKEN=/from/the/file.json\n")
+        os.environ["LUPA_OAUTH_TOKEN"] = "/from/the/process.json"
+        self.assertEqual(Path(environment()["LUPA_OAUTH_TOKEN"]),
+                         Path("/from/the/process.json"))
+
+
+class TestPriceOverridesAreReadFromTheFile(unittest.TestCase):
+    """A setting missing from SETTINGS is read from the process environment only —
+    which is exactly the half nobody notices until the .env is ignored."""
+
+    def test_the_price_overrides_are_settings(self):
+        self.assertIn("LUPA_INPUT_PRICE", SETTINGS)
+        self.assertIn("LUPA_OUTPUT_PRICE", SETTINGS)

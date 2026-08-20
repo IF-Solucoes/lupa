@@ -5,11 +5,15 @@ bottom, imported only when credentials exist — so the core runs without the
 Google client libraries installed.
 """
 import hashlib
-import re
-
-LABELS_MARKER = "Image labels:"
 
 # Fields requested from the API. Each one saves a later round trip.
+#
+# Every name here must be a real property of the Drive v3 `File` resource. An
+# unknown name is not ignored: `fields=` answers it with HTTP 400 and the whole
+# listing dies. tests/test_drive.py checks each one against the discovery document
+# that ships inside google-api-python-client, because the opposite mistake — reading
+# a field nobody ever asked for — is silent, and cost this repository `has_text`,
+# `text` and `labels` on every image it ever indexed.
 FIELDS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
           "webViewLink,thumbnailLink,"
           "imageMediaMetadata(width,height,cameraMake,cameraModel)),nextPageToken")
@@ -31,26 +35,6 @@ def subfolder_query(folder_id):
             f"and trashed = false")
 
 
-def split_ocr_and_labels(snippet):
-    """Drive returns OCR text and labels glued into one field. This separates them.
-
-    The OCR is useful and free. The labels are generic Google noise — kept raw,
-    never trusted for classification.
-    """
-    if not snippet:
-        return "", []
-
-    parts = snippet.split(LABELS_MARKER, 1)
-    ocr = parts[0].strip()
-    if len(parts) == 1:
-        return ocr, []
-
-    raw = parts[1].strip().strip("\\").strip()
-    raw = re.sub(r"^\\?\[|\\?\]$", "", raw).strip()
-    labels = [label.strip().strip("\\").strip() for label in raw.split(";")]
-    return ocr, [label for label in labels if label]
-
-
 def _hash_of(raw):
     """md5 when the API provides one; otherwise a fingerprint of size and date."""
     if raw.get("md5Checksum"):
@@ -62,7 +46,6 @@ def _hash_of(raw):
 def normalize_file(raw):
     """Converts an API response into the shape the rest of lupa consumes."""
     media = raw.get("imageMediaMetadata") or {}
-    ocr, labels = split_ocr_and_labels(raw.get("contentSnippet"))
 
     exif = {}
     if media.get("cameraMake"):
@@ -79,8 +62,6 @@ def normalize_file(raw):
         "w": int(media.get("width") or 0),
         "h": int(media.get("height") or 0),
         "exif": exif,
-        "ocr_text": ocr,
-        "labels": labels,
         "url": raw.get("webViewLink") or f"https://drive.google.com/file/d/{raw.get('id')}/view",
         "thumbnail": raw.get("thumbnailLink"),
         "trashed": bool(raw.get("trashed")),
@@ -107,6 +88,13 @@ def connect(client_secret, token_path, with_credentials=False):
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
+
+    if not token_path:
+        # Never reached through config.environment(), which always fills this
+        # in. A caller that builds its own env deserves a sentence, not a
+        # TypeError from inside pathlib.
+        raise ValueError("no path to store the Google sign-in: "
+                         "LUPA_OAUTH_TOKEN is empty")
 
     token_path = Path(token_path).expanduser()
     credentials = None

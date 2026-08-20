@@ -27,15 +27,15 @@ question is answered over text.
 
 ## How it works
 
-1. **Collect what is already free.** Google Drive runs OCR on images and returns it
-   in the file metadata. lupa harvests that — it never pays for OCR.
-2. **Decide whatever metadata can decide.** EXIF, aspect ratio, format, and text
-   density already tell a camera photo from a design export. Zero cost.
-3. **Only then call the vision model**, and only for what is left: composition,
-   light, palette, style, ambiguous types. Gemini 2.5 Flash-Lite, submitted as a
-   single batch job at half price. The model never receives a 24-megapixel
-   original either — it gets the 768px thumbnail Google already generated.
-4. **Write a text index** inside the collection itself (`_lupa/`), at three reading
+1. **Settle what metadata settles, for free.** Dimensions, aspect ratio, orientation,
+   and — from EXIF — whether a camera took the picture. Arithmetic and facts stamped
+   by the device: zero cost and zero guessing.
+2. **Ask the vision model everything that needs eyes**: type and material,
+   composition, light, palette, style, and the words baked into the image, which it
+   transcribes. Gemini Flash-Lite (`LUPA_MODEL`), submitted as a single batch job at
+   half price. The model never receives a 24-megapixel original either — it gets the
+   768px thumbnail Google already generated.
+3. **Write a text index** inside the collection itself (`_lupa/`), at three reading
    levels, cheapest first.
 
 From the second run on, only what changed costs anything.
@@ -65,19 +65,25 @@ lupa_search(query="warm light", collection="photos")   # one collection
 lupa_search(query="warm light")                        # all of them at once
 ```
 
+On Windows, write `python` in every command below: `python3` there is the Microsoft
+Store stub, which prints an advertisement and runs nothing. And `python -m lupa`
+imports the package from the current directory — run it from the repository root, or
+from the plugin folder that holds `lupa/`.
+
 Point `LUPA_INDEXES` at a path inside a repository if you want that project to keep
 its own separate index instead of the shared one.
 
 ### A local folder and a Drive folder are not the same thing
 
 You can index a folder on disk — including the one Google Drive for Desktop
-synchronizes. It works, and lupa detects that case. But the Drive API gives you
-three things the disk cannot:
+synchronizes. It works, and lupa detects that case. But the Drive API gives you two
+things the disk cannot:
 
-- **the OCR Google already ran**, free — without it, text baked into artwork never
-  reaches search;
 - **shareable `https` links**, which other people and other agents can open;
 - **an immutable id per file** — renaming a folder stops forcing a full reindex.
+
+What gets *described* is identical either way: the caption, the tags and the text
+transcribed from inside the image all come from the vision model, never from Drive.
 
 When you point at a mounted folder, preflight says so and carries on. The choice is
 informed, not mandatory.
@@ -161,7 +167,7 @@ missing, and shows the plan:
 Preflight · collection "if-editorial"
 
   ✓ collection: Google Drive folder · id 1a2B3c · named "if-editorial"
-  ✓ collection source: through the Drive API — with OCR and shareable links
+  ✓ collection source: through the Drive API — with shareable links and a stable id per file
   ✗ Gemini key: GEMINI_API_KEY is empty
       Get a key at https://aistudio.google.com/apikey and write it into
       your lupa.env    →    GEMINI_API_KEY=your-key
@@ -190,9 +196,10 @@ query terms are required; if nothing matches them all, it falls back to any of
 them and says so in the reason. Prefixes work (`bann` finds `banner`), and the
 projection is derived data — delete it and the next run rebuilds it.
 
-Google's raw `labels` are stored but deliberately **not searchable**. They are
-generic and often wrong — on a post about prioritization Drive suggested
-"Heineken" and "Beryllium". Scoring them would guarantee false positives.
+Four fields are searched, in this order of weight: `tags`, `caption`, `file`,
+`text`. There is no `labels` field: it was supposed to hold Drive's own image
+labels, and the property it was read from does not exist in the Drive API, so it
+was always empty. It is no longer written.
 
 ### Useful flags
 
@@ -200,6 +207,7 @@ generic and often wrong — on a post about prioritization Drive suggested
 |---|---|
 | `--dry-run` | stop after the plan, spend nothing |
 | `--retry-failed` | describe again the images that failed in earlier runs |
+| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice |
 | `--no-recursive` | index only the top level |
 | `--no-batch` | one call per image, immediate but twice the price |
 | `--workers N` | parallel describe calls when batch is off (default 8) |
@@ -281,13 +289,16 @@ LUPA_ENV=./project.env python3 -m lupa status
 |---|---|---|
 | `GEMINI_API_KEY` | — | vision model key (required to index) |
 | `LUPA_LANG` | `en` | language of generated captions and tags (`pt`, `es`, …) |
-| `LUPA_MODEL` | `gemini-2.5-flash-lite` | model used for descriptions |
+| `LUPA_MODEL` | `gemini-3.5-flash-lite` | model used for descriptions |
+| `LUPA_INPUT_PRICE` | from the table in `lupa/caption.py` | input price per 1M tokens, when you need to override the table |
+| `LUPA_OUTPUT_PRICE` | from the table in `lupa/caption.py` | output price per 1M tokens, same idea |
 | `LUPA_BATCH` | `1` | batch mode: half price, asynchronous. `0` forces immediate |
 | `LUPA_CONFIRM_ABOVE` | `200` | ask before describing more images than this |
 | `LUPA_CONFIG` | `~/.lupa/collections.json` | saved collection registry |
 | `LUPA_INDEXES` | `~/.lupa/indexes` | local mirror of the indexes, read by the MCP |
 | `LUPA_STATE_DIR` | — | shortcut: sets the index mirror to `<dir>/indexes` |
-| `LUPA_OAUTH_CLIENT` / `LUPA_OAUTH_TOKEN` | — | Google Drive credentials |
+| `LUPA_OAUTH_CLIENT` | — | Google Drive OAuth client JSON, downloaded per person |
+| `LUPA_OAUTH_TOKEN` | `~/.lupa/oauth_token.json` | where the Google sign-in is stored after the first authorization |
 
 Nothing here needs to be edited by hand to get started: the first successful run
 registers the collection for you.
@@ -299,6 +310,25 @@ Describing a thousand images in batch with Flash-Lite lands in the range of
 `--dry-run` before you spend.
 
 Above 200 new images, the command asks first.
+
+The price is a table, one row per model, and the preflight report always names
+the model the estimate was computed for and where the number came from:
+
+```
+  ✓ cost estimate: US$ 0.30 in / US$ 2.50 out per 1M tokens for
+    gemini-3.5-flash-lite · from the table for gemini-3.5-flash-lite · batch halves it
+```
+
+Set `LUPA_MODEL` to a model the table has never heard of and the estimate is not
+quoted at all — it says so and tells you how to supply the two prices yourself,
+because a confident number for the wrong model is worse than an admitted blank.
+`LUPA_INPUT_PRICE` and `LUPA_OUTPUT_PRICE` override the table, so a price Google
+changed is one line in your settings file rather than a new release of lupa.
+
+Google retires models. When one goes, the API answers every single image with the
+same 404 — and lupa reads that answer, names the successor Google itself suggests,
+and tells you to put it in `LUPA_MODEL`, instead of printing a bare HTTP error a
+few hundred times.
 
 Two things keep that number honest: the model receives a 768px thumbnail rather
 than the original, and the whole run goes up as one batch job at half price. Pass

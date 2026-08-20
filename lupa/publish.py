@@ -7,10 +7,10 @@ it with one listing per folder.
 from pathlib import Path
 
 # Derived or private artifacts never leave the machine: the database and curation
-# thumbnails rebuild from the catalog, the backup is local history, and the lock is
-# a runtime detail.
+# thumbnails rebuild from the catalog, the backup is local history, and the lock and
+# the in-flight batch receipt (lupa.inflight) are runtime details of one machine.
 SKIPPED_FOLDERS = {".backup", ".thumbs"}
-SKIPPED_NAMES = {".lock"}
+SKIPPED_NAMES = {".lock", ".batch.json"}
 SKIPPED_SUFFIXES = {".db", ".tmp"}
 
 

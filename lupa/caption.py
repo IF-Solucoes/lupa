@@ -1,11 +1,14 @@
 """Vision-model description.
 
-The model is asked only about what metadata could not settle. It never
-transcribes text (Drive already did OCR for free) and never overrides what is
-already known.
+The model is asked only about what metadata could not settle, and never overrides
+what is already known. Transcribing the text in the image is part of the job: it
+used to be forbidden here, on the belief that Drive had already done OCR for free,
+and Drive never did — the field that was supposed to carry it does not exist in the
+API. The only party that can read the words is the one looking at the picture.
 """
 import json
 import re
+from dataclasses import dataclass
 
 KINDS = ("photo", "design", "screenshot", "diagram", "logo", "other")
 MEDIUMS = ("physical", "digital", "na")
@@ -14,11 +17,107 @@ DEFAULT_LANGUAGE = "en"
 LANGUAGE_NAMES = {"en": "English", "pt": "Brazilian Portuguese", "es": "Spanish",
                   "fr": "French", "de": "German", "it": "Italian"}
 
-# Gemini 2.5 Flash-Lite, price per 1M tokens. Batch mode halves it.
-INPUT_PRICE = 0.10
-OUTPUT_PRICE = 0.40
 INPUT_TOKENS_PER_IMAGE = 600   # 768px thumbnail plus prompt
+
+# A budget, not an average — it feeds the warning shown before spending, so it has
+# to cover the worst ordinary image rather than the typical one. Measured against
+# the 875 real responses of the first indexed collection: what the model returns
+# today is 313 chars ≈ 78 tokens once kind/medium are always asked. `has_text` adds
+# about 4, and the transcription is capped at 60 words in the prompt below, which is
+# ≈ 90 tokens of Portuguese. 78 + 4 + 90 = 172, so the 200 this repository has always
+# quoted still covers the transcription, and no price moves because of it.
 OUTPUT_TOKENS_PER_IMAGE = 200
+
+# Price per 1M tokens, per model — (input, output). Batch mode is exactly half on
+# both, so the halving below is a property of the mode, not of any one model.
+#
+# Source: https://ai.google.dev/gemini-api/docs/pricing, paid tier, read 2026-08-20.
+# One price per model and no global default on purpose: a single hardcoded pair is
+# how this repository ended up quoting Flash-Lite 2.5 rates for whatever model the
+# person had actually configured.
+MODEL_PRICES = {
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+}
+
+INPUT_PRICE_VAR = "LUPA_INPUT_PRICE"
+OUTPUT_PRICE_VAR = "LUPA_OUTPUT_PRICE"
+
+
+@dataclass
+class Pricing:
+    """What one image-describing token costs, and — just as important — why.
+
+    A number with no stated basis is the defect this class exists to end, so the
+    origin travels with the value everywhere it goes.
+    """
+    model: str = ""
+    input_price: float = None
+    output_price: float = None
+    origin: str = ""
+    complaints: tuple = ()
+
+    @property
+    def known(self):
+        return self.input_price is not None and self.output_price is not None
+
+
+def _price_from_env(env, key):
+    """One overridden price, or a complaint explaining why it was refused.
+
+    A junk value is ignored rather than fatal, and never silently applied: this
+    number only ever feeds a warning printed before spending, so crashing the run
+    over a typo would be a worse outcome than falling back to the table and saying
+    so out loud. Zero is a legitimate price (free tier); negative is not.
+    """
+    raw = (env or {}).get(key)
+    if raw is None or str(raw).strip() == "":
+        return None, None
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None, f"{key}={raw!r} is not a number — ignored"
+    if value < 0:
+        return None, f"{key}={raw!r} is negative — ignored"
+    return value, None
+
+
+def resolve_pricing(model=None, env=None):
+    """Price for a model, in the order the rest of the settings resolve.
+
+    process environment > settings file > table for this model > unknown.
+    The first two arrive already collapsed in `env` (config.environment layers the
+    process on top of the file), so this only has to prefer env over table.
+    """
+    from lupa.gemini import DEFAULT_MODEL      # lazy: gemini reads caption too
+
+    model = model or DEFAULT_MODEL
+    table = MODEL_PRICES.get(model)
+    prices, sources, complaints = {}, {}, []
+
+    for slot, key, index in (("input", INPUT_PRICE_VAR, 0),
+                             ("output", OUTPUT_PRICE_VAR, 1)):
+        value, complaint = _price_from_env(env, key)
+        if complaint:
+            complaints.append(complaint)
+        if value is not None:
+            prices[slot], sources[slot] = value, key
+        elif table:
+            prices[slot], sources[slot] = table[index], f"the table for {model}"
+        else:
+            prices[slot], sources[slot] = None, ""
+
+    if not any(sources.values()):
+        origin = f"no price on record for {model}"
+    elif sources["input"] == sources["output"]:
+        origin = sources["input"]
+    else:
+        origin = f"{sources['input'] or 'nothing'} (input), " \
+                 f"{sources['output'] or 'nothing'} (output)"
+
+    return Pricing(model=model, input_price=prices["input"],
+                   output_price=prices["output"], origin=origin,
+                   complaints=tuple(complaints))
 
 
 class InvalidResponse(Exception):
@@ -40,6 +139,12 @@ def build_prompt(meta, language=DEFAULT_LANGUAGE):
         '  "scene": "indoor", "outdoor" or "na".',
         '  "people": number of visible people (0 if none).',
         '  "palette": 2 to 4 dominant colors as hex codes.',
+        '  "has_text": true when words are part of the image — a headline, a caption',
+        "     bar, a printed piece. false for incidental text: a small logo, a street",
+        "     sign, a nameplate, a label on equipment.",
+        '  "text": the words visible in the image, transcribed exactly.',
+        '     Stop at 60 words: transcribe the largest and most prominent first.',
+        '     "" when there are none. Never invent what you cannot read.',
     ]
 
     # The kind is only asked about when metadata could not settle it.
@@ -56,7 +161,6 @@ def build_prompt(meta, language=DEFAULT_LANGUAGE):
 
     lines += [
         "",
-        "Do NOT transcribe the text in the image — it has already been extracted.",
         "Describe composition, light, color and style. Be concrete, not poetic.",
     ]
     return "\n".join(lines)
@@ -80,6 +184,17 @@ def parse_response(text):
         return json.loads(cleaned[start:end + 1])
     except json.JSONDecodeError as error:
         raise InvalidResponse(f"malformed JSON: {error}") from error
+
+
+def _as_bool(value):
+    """A boolean out of whatever JSON the model felt like writing.
+
+    `bool("false")` is True, which is how a model that answers in strings turns every
+    image into one with text. The words are checked before the fallback.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
 
 
 def _clean_tags(raw):
@@ -118,25 +233,35 @@ def merge(meta, vision):
         "scene": vision.get("scene") or "na",
         "people": int(vision.get("people") or 0),
         "palette": list(vision.get("palette") or []),
-        "has_text": bool(meta.get("has_text")),
-        "text": meta.get("ocr_text") or "",       # OCR from Drive, free
-        "labels": list(meta.get("labels") or []),  # raw Google labels
+        # Both from the model, and only from the model: metadata cannot see.
+        "has_text": _as_bool(vision.get("has_text")),
+        "text": str(vision.get("text") or "").strip(),
         "hash": meta.get("hash"),
     }
 
 
-def estimate_cost(count, batch=True):
-    """Approximate dollar cost. It serves the warning before spending, not accounting."""
+def estimate_cost(count, batch=True, model=None, env=None):
+    """Approximate dollar cost. It serves the warning before spending, not accounting.
+
+    Returns None — not zero — when the model cannot be priced. Zero would be a
+    quote, and quoting is precisely what a system with no price must not do; the
+    preflight check is where that silence gets explained.
+    """
     if count <= 0:
         return 0.0
-    inbound = count * INPUT_TOKENS_PER_IMAGE / 1_000_000 * INPUT_PRICE
-    outbound = count * OUTPUT_TOKENS_PER_IMAGE / 1_000_000 * OUTPUT_PRICE
+    pricing = resolve_pricing(model, env)
+    if not pricing.known:
+        return None
+    inbound = count * INPUT_TOKENS_PER_IMAGE / 1_000_000 * pricing.input_price
+    outbound = count * OUTPUT_TOKENS_PER_IMAGE / 1_000_000 * pricing.output_price
     total = inbound + outbound
     return round(total * (0.5 if batch else 1.0), 6)
 
 
 def format_cost(value):
     """Cost to read, not to audit. A fraction of a cent needs no six decimals."""
+    if value is None:
+        return "unknown — this model has no price on record"
     if not value:
         return "US$ 0.00"
     if value < 0.01:

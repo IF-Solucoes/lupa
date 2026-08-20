@@ -56,3 +56,447 @@ class TestSettingsOverride(unittest.TestCase):
         dispatched = body.index("command_index(args)")
         self.assertLess(applied, dispatched,
                         "--env must be applied before a command reads configuration")
+
+
+class TestResumeBatchIsDeclaredForBothVerbs(unittest.TestCase):
+    """A batch already paid for can only be resumed if the flag exists on the
+    verb the user actually types — and `index` and `update` are the same door."""
+
+    def test_the_flag_is_declared(self):
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn('"--resume-batch"', source)
+
+    def test_it_is_declared_in_the_loop_shared_by_index_and_update(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        loops = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+                 and [getattr(element, "value", None) for element in node.iter.elts]
+                 == ["index", "update"]]
+        self.assertTrue(loops, "the shared verb loop disappeared from cli.py")
+        self.assertIn("--resume-batch", ast.unparse(loops[0]),
+                      "--resume-batch must reach `update` too, not only `index`")
+
+
+class TestOAuthTokenReachesDrive(unittest.TestCase):
+    """The value the CLI hands to drive.connect, and the one preflight inspects,
+    must be the same and must never be None.
+
+    Regression: `lupa index <drive folder>` on a clean install passed preflight
+    and then died with
+        TypeError: argument should be a str or an os.PathLike object where
+        __fspath__ returns a str, not 'NoneType'
+    because LUPA_OAUTH_TOKEN had no default and connect() does
+    Path(token_path).expanduser().
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_OAUTH_TOKEN", "LUPA_OAUTH_CLIENT")
+    CLIENT = "/existe/oauth.json"
+
+    def setUp(self):
+        import os
+        import tempfile
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        handle = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+        handle.write(f"GEMINI_API_KEY=abc\nLUPA_OAUTH_CLIENT={self.CLIENT}\n")
+        handle.close()
+        self.env_file = handle.name
+        os.environ["LUPA_ENV"] = self.env_file
+
+    def tearDown(self):
+        import os
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        Path(self.env_file).unlink(missing_ok=True)
+
+    def target(self):
+        from lupa.target import Target
+        return Target("drive", "if-editorial", folder_id="ABC123")
+
+    def run_build_source(self):
+        """Returns (env, token path actually delivered to drive.connect)."""
+        import lupa.drive
+        from lupa import cli, config
+
+        seen = {}
+
+        def fake_connect(client_secret, token_path, with_credentials=False):
+            seen["client"] = client_secret
+            seen["token"] = token_path
+            return (None, None) if with_credentials else None
+
+        original = lupa.drive.connect
+        lupa.drive.connect = fake_connect
+        try:
+            env = config.environment()
+            cli.build_source(self.target(), env, cache="/tmp/lupa-cache")
+        finally:
+            lupa.drive.connect = original
+        return env, seen["token"]
+
+    def test_the_token_path_delivered_to_connect_is_not_none(self):
+        _, token = self.run_build_source()
+        self.assertIsNotNone(
+            token, "connect() received None and would raise TypeError on Path()")
+
+    def test_the_delivered_path_survives_the_call_that_used_to_crash(self):
+        _, token = self.run_build_source()
+        self.assertTrue(str(Path(token).expanduser()))
+
+    def test_preflight_and_execution_agree_on_the_token_path(self):
+        from lupa.preflight import OK, diagnose
+
+        env, token = self.run_build_source()
+        checks = diagnose(self.target(), env,
+                          existing_files={self.CLIENT, str(token)})
+        sign_in = [check for check in checks if check.name == "Google sign-in"][0]
+        self.assertEqual(
+            sign_in.status, OK,
+            "preflight inspected a different token path than the one execution uses")
+
+
+class TestCosmeticProbeNeverLogsIn(unittest.TestCase):
+    """The folder-name probe in command_index is cosmetic: it may not sign in.
+
+    Behavioral, not AST-based: the other classes in this file read cli.py as
+    text, but "does a browser open" is only answerable by running the command.
+
+    Regression: once LUPA_OAUTH_TOKEN gained a default, connect() stopped dying
+    with TypeError inside the probe's try/except and started walking into
+    InstalledAppFlow.run_local_server(port=0) — which opens a browser and blocks,
+    BEFORE the preflight report explains why, and even under --dry-run.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_OAUTH_TOKEN",
+            "LUPA_OAUTH_CLIENT", "GEMINI_API_KEY", "LUPA_STATE_DIR")
+    FOLDER_ID = "15fvulcdmebag7t2tm"
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-probe-"))
+
+        self.client = self.home / "oauth_client.json"
+        self.client.write_text('{"installed": {"client_id": "x"}}', encoding="utf-8")
+        self.token = self.home / "oauth_token.json"   # deliberately absent
+
+        self.env_file = self.home / "lupa.env"
+        # No GEMINI_API_KEY on purpose: preflight blocks and the run stops right
+        # after the report, which is all this test needs to observe.
+        self.env_file.write_text(
+            f"LUPA_OAUTH_CLIENT={self.client}\nLUPA_OAUTH_TOKEN={self.token}\n",
+            encoding="utf-8")
+
+        os.environ["LUPA_ENV"] = str(self.env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+    def tearDown(self):
+        import os
+        import shutil
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def interactive_spy(self):
+        """Stands in for the real InstalledAppFlow, the thing that opens a browser.
+
+        Recording happens at from_client_secrets_file — the first step of the
+        interactive flow — then it raises, so run_local_server can never block.
+        """
+        reached = []
+
+        class SpyFlow:
+            @staticmethod
+            def from_client_secrets_file(path, scopes):
+                reached.append(Path(path))
+                raise RuntimeError("a browser would open here")
+
+        return reached, SpyFlow
+
+    def run_index(self, argv):
+        """Runs the CLI and returns everything it printed."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                cli.main(argv)
+        return out.getvalue()
+
+    def test_the_spy_really_detects_the_interactive_flow(self):
+        """Anti-tautology: with no stored session, real connect() DOES reach it."""
+        import google_auth_oauthlib.flow as flow_module
+
+        from lupa.drive import connect
+
+        reached, spy = self.interactive_spy()
+        original = flow_module.InstalledAppFlow
+        flow_module.InstalledAppFlow = spy
+        try:
+            with self.assertRaises(RuntimeError):
+                connect(str(self.client), str(self.token))
+        finally:
+            flow_module.InstalledAppFlow = original
+
+        self.assertEqual([Path(self.client)], reached,
+                         "the spy is not wired to the interactive flow")
+
+    def test_probe_does_not_sign_in_when_no_session_is_stored(self):
+        import google_auth_oauthlib.flow as flow_module
+
+        reached, spy = self.interactive_spy()
+        original = flow_module.InstalledAppFlow
+        flow_module.InstalledAppFlow = spy
+        try:
+            printed = self.run_index(["index", self.FOLDER_ID])
+        finally:
+            flow_module.InstalledAppFlow = original
+
+        self.assertIn("Preflight", printed,
+                      "the report must be printed; the run stopped somewhere else")
+        self.assertEqual(
+            [], reached,
+            "the cosmetic probe walked into the interactive login: a browser "
+            "would have opened before the preflight report was printed")
+
+    def test_probe_does_not_sign_in_under_dry_run_either(self):
+        import google_auth_oauthlib.flow as flow_module
+
+        reached, spy = self.interactive_spy()
+        original = flow_module.InstalledAppFlow
+        flow_module.InstalledAppFlow = spy
+        try:
+            self.run_index(["index", self.FOLDER_ID, "--dry-run"])
+        finally:
+            flow_module.InstalledAppFlow = original
+
+        self.assertEqual([], reached,
+                         "--dry-run must not open a browser")
+
+    def test_probe_still_names_the_collection_when_a_session_is_stored(self):
+        """The other side: with a stored session the pretty name still wins."""
+        import lupa.drive
+
+        self.token.write_text("{}", encoding="utf-8")
+        seen = {}
+
+        def fake_connect(client_secret, token_path, with_credentials=False):
+            seen["client"] = Path(client_secret)
+            seen["token"] = Path(token_path)
+            return "service-double"
+
+        original_connect = lupa.drive.connect
+        original_name = lupa.drive.folder_name
+        lupa.drive.connect = fake_connect
+        lupa.drive.folder_name = lambda service, folder_id: "Referencias Editorial"
+        try:
+            printed = self.run_index(["index", self.FOLDER_ID])
+        finally:
+            lupa.drive.connect = original_connect
+            lupa.drive.folder_name = original_name
+
+        self.assertEqual(Path(self.client), seen.get("client"),
+                         "the probe did not run with a stored session")
+        self.assertEqual(Path(self.token), seen.get("token"))
+        self.assertIn("referencias-editorial", printed,
+                      "the Drive name stopped reaching the collection name")
+
+
+class TestTheExitCodeTellsTheTruth(unittest.TestCase):
+    """A failed run must be detectable by a script, not only by a careful reader.
+
+    Regression, 2026-08-20: 875 of 875 images failed with the same HTTP 404 and
+    `lupa index` printed "Done." on the first line, "875 images failed" on the
+    last, and exited 0 — so `lupa index && lupa publish` published nothing.
+
+    Behavioral on purpose: an exit code is only observable by running the command.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR",
+            "GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG",
+            "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN")
+
+    RETIRED = ("HTTP 404: gemini-2.5-flash-lite is no longer available; "
+               "use gemini-3.5-flash-lite instead")
+
+    class FakeSource:
+        """Two images, no network, no credentials."""
+
+        def list(self):
+            return [{"id": name, "file": f"{name}.png", "hash": name,
+                     "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+                     "url": f"https://example.invalid/{name}",
+                     "trashed": False, "size": 100}
+                    for name in ("a", "b")]
+
+        def fetch(self, file_id):
+            return b"bytes", "image/png"
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-exit-"))
+        self.collection = self.home / "photos"
+        self.collection.mkdir()
+
+        env_file = self.home / "lupa.env"
+        env_file.write_text("GEMINI_API_KEY=abc\n", encoding="utf-8")
+        os.environ["LUPA_ENV"] = str(env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+    def tearDown(self):
+        import os
+        import shutil
+
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def run_index(self, describe, *extra):
+        """Runs `lupa index` over the fake source. Returns (exit code, output)."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        source = self.FakeSource()
+        original_source, original_describer = cli.build_source, cli.make_describer
+        cli.build_source = lambda *a, **k: (source, None)
+        cli.make_describer = lambda *a, **k: describe
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["index", str(self.collection), "--yes", "--no-push",
+                              "--no-batch", "--no-contact-sheets", *extra])
+                except SystemExit as stop:
+                    code = stop.code if isinstance(stop.code, int) else 1
+        finally:
+            cli.build_source, cli.make_describer = original_source, original_describer
+        return code, printed.getvalue()
+
+    def working_model(self):
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def broken_model(self, only=None):
+        def describe(item, image, mime):
+            if only is None or item["id"] == only:
+                raise RuntimeError(self.RETIRED)
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def test_a_total_failure_does_not_exit_zero(self):
+        code, _ = self.run_index(self.broken_model())
+        self.assertNotEqual(0, code)
+
+    def test_a_single_failure_is_enough_to_change_the_exit_code(self):
+        code, _ = self.run_index(self.broken_model(only="b"))
+        self.assertNotEqual(0, code)
+
+    def test_a_total_failure_never_says_done(self):
+        _, printed = self.run_index(self.broken_model())
+        self.assertNotIn("Done.", printed)
+
+    def test_a_total_failure_speaks_before_it_reports_anything_else(self):
+        _, printed = self.run_index(self.broken_model())
+        lines = [line for line in printed.splitlines() if line.strip()]
+        verdict = next(i for i, line in enumerate(lines) if "failed" in line.lower())
+        location = next(i for i, line in enumerate(lines) if "local index:" in line)
+        self.assertLess(verdict, location,
+                        "the failure must be read before anything else in the report")
+
+    def test_a_total_failure_names_the_error_that_repeated(self):
+        _, printed = self.run_index(self.broken_model())
+        self.assertIn("no longer available", printed)
+
+    def test_nothing_that_failed_is_counted_as_added(self):
+        """The plan may promise 2; the result must report the 1 that happened."""
+        _, printed = self.run_index(self.broken_model(only="b"))
+        done = next(line for line in printed.splitlines() if line.startswith("Done."))
+        self.assertIn("+1 added", done)
+        self.assertNotIn("+2 added", done)
+        self.assertIn("!1 failed", done)
+
+    def test_a_healthy_run_still_exits_zero_and_still_says_done(self):
+        code, printed = self.run_index(self.working_model())
+        self.assertEqual(0, code)
+        self.assertIn("Done. +2 added · ~0 changed · -0 removed · =0 unchanged",
+                      printed)
+
+    def test_a_dry_run_still_exits_zero(self):
+        code, printed = self.run_index(self.broken_model(), "--dry-run")
+        self.assertEqual(0, code)
+        self.assertIn("--dry-run", printed)
+
+
+class TestSearchAcceptsTheTextFilter(unittest.TestCase):
+    """`has_text` is a filter everywhere except the CLI, and that gap is silent.
+
+    The MCP has accepted it since the first version and the skill's filter table
+    lists it, so an agent that falls back to the command line runs
+    `--has-text false` and gets `unrecognized arguments`. The value also has to
+    arrive as a real boolean: the catalog stores `true`/`false` as JSON booleans
+    and the filter is an equality test, so the string "false" would match no
+    image at all — a wrong answer instead of an error.
+    """
+
+    def search(self, argv):
+        """Runs `lupa search` with the Server replaced by a spy. Nothing is read
+        from disk and no index is touched: only the filter dict is captured."""
+        from lupa import cli
+
+        captured = {}
+
+        class Spy:
+            def __init__(self, _root):
+                pass
+
+            def tool_search(self, args):
+                captured.update(args)
+                return ""
+
+        original = cli.Server
+        cli.Server = Spy
+        try:
+            cli.main(argv)
+        finally:
+            cli.Server = original
+        return captured
+
+    def test_false_reaches_the_filter_as_a_boolean(self):
+        filters = self.search(["search", "banner", "--has-text", "false"])
+        self.assertIn("has_text", filters)
+        self.assertIs(filters["has_text"], False)
+
+    def test_true_reaches_the_filter_as_a_boolean(self):
+        self.assertIs(self.search(
+            ["search", "banner", "--has-text", "true"])["has_text"], True)
+
+    def test_the_underscore_spelling_is_accepted_too(self):
+        """`has_text` is how the field is spelled in the catalog, in the schema
+        and in the MCP; whoever copies it must not hit a parser error."""
+        self.assertIs(self.search(
+            ["search", "banner", "--has_text", "true"])["has_text"], True)
+
+    def test_nothing_is_filtered_when_the_flag_is_absent(self):
+        self.assertNotIn("has_text", self.search(["search", "banner"]))

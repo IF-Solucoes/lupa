@@ -57,7 +57,10 @@ class TestLocalSource(unittest.TestCase):
         self.assertTrue(a["url"].startswith("file://"))
 
     def test_no_ocr_because_a_local_folder_has_none(self):
-        self.assertEqual(self.source.list()[0]["ocr_text"], "")
+        # Drive never returned OCR either — the field it was read from does not
+        # exist in the API — so a local folder is not the poorer source here.
+        self.assertNotIn("ocr_text", self.source.list()[0])
+        self.assertNotIn("labels", self.source.list()[0])
 
     def test_fetch_returns_bytes_and_mime(self):
         data, mime = self.source.fetch("a.png")

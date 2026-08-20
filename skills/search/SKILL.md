@@ -31,9 +31,16 @@ lupa_status()   # which collections exist and when they were updated
 **From the command line**, when the MCP is unavailable:
 
 ```bash
-python3 -m lupa search "bridge night blue" --kind design --limit 10
-python3 -m lupa status
+python -m lupa search "bridge night blue" --kind design --limit 10
+python -m lupa status
 ```
+
+Run it **from the folder that holds the `lupa/` package** — the plugin root (two
+levels above the directory this skill was loaded from) or the root of a checkout of
+the repository. There is no installed console script, so from any other directory
+`python -m lupa` answers `No module named lupa`. Always spell the interpreter
+`python`: the versioned alias — the same word with a `3` on the end — is the
+Microsoft Store stub on Windows, and it runs nothing at all.
 
 ## The filters that keep junk out of the result
 
@@ -46,6 +53,9 @@ type:
 | `medium` | `physical` `digital` `na` | `design`+`physical` means print, banner, real mockup |
 | `orientation` | `portrait` `landscape` `square` | match the destination format |
 | `has_text` | `true` `false` | `false` returns clean images with no baked-in type |
+
+On the command line the same four are flags: `--kind`, `--medium`, `--orientation`,
+`--has-text true|false` (`--has_text` is accepted too).
 
 Requests these actually solve:
 
@@ -60,27 +70,48 @@ counts for far more than "blue". All your terms are required; when nothing match
 them all, the search falls back to any of them and the reason says `some terms`
 instead of `all terms`. Prefixes work: `bann` finds `banner`.
 
-Google's raw labels are stored in the catalog but are **not** searchable, because
-they are noisy enough to produce false positives on their own.
+The four searchable fields are `tags`, `caption`, `file` and `text`, in that order
+of weight. There is no `labels` field to search: it was harvested from a Drive
+property that does not exist, so it was always empty and is no longer written.
+
+## Where the words come from
+
+Everything you search — caption, tags, `has_text` and the transcribed `text` —
+is written by the **vision model that looked at the image**. Google Drive returns
+no text of any kind to lupa, so this is true of a Drive collection and a local
+folder alike: neither has an advantage in what can be found by words.
+
+An index built before this was fixed carries `has_text: false` on every image and an
+empty `text`, because the field lupa read never existed. The symptom is unmistakable:
+`has_text=true` returns nothing at all, in a collection you know has printed pieces.
+That index needs a rebuild (`lupa-index` skill) before it can answer about text.
+
+## Language: the index speaks one, your user may speak another
+
+Captions and tags are written in the language of `LUPA_LANG` — **English by
+default**, whatever the language of the collection. File and folder names keep the
+client's language. So in a Brazilian collection, `gato` returns nothing while `cat`
+is the tag on 114 images; a query in the wrong language reads exactly like an empty
+collection. When a non-English query comes back empty, translate it and search
+again before telling anyone the material does not exist.
 
 ## Reading the result
 
 Each candidate carries a caption, tags, type, link, and **why it matched**
-(`matched on:`). Use the reason to calibrate: a match that came only from OCR may be
-weak — the piece mentioned the term in its copy, but the image may show nothing of
-the sort.
-
-## Collections indexed from a local folder
-
-A collection indexed from disk has no Google OCR. Its `text` field is empty and
-searching for text baked into the artwork will not work there — search by tags and
-caption instead. `lupa_status` lists the collections; each one's `INDEX.md` shows
-its real vocabulary.
+(`matched on:`). `all terms` means every term hit; `some terms` means the search had
+to fall back to any of them, so read that candidate with suspicion. The reason does
+not say which field matched — a term can come from the transcribed text rather than
+from the picture, so open the finalists when the answer has to be visual.
 
 ## When the search finds nothing
 
-1. Run `lupa_status` and read the vocabulary in that collection's `INDEX.md`.
-2. Try broader terms — the index uses concrete words ("wood", "natural-light"),
+1. Read the collection's vocabulary: `~/.lupa/indexes/<collection>/INDEX.md` by
+   default (`lupa_status` lists the collection names, not the vocabulary). Careful:
+   it shows only the **40 most frequent** tags and does not say so — a collection
+   with 546 tags shows 40. An absent tag is not proof of an absent subject; the full
+   list is the file names under `by-tag/`.
+2. Try the English term, if the query was not in English (see above).
+3. Try broader terms — the index uses concrete words ("wood", "natural-light"),
    not abstractions ("cozy", "premium").
-3. If the collection looks stale, call the `lupa-index` skill to run an update
+4. If the collection looks stale, call the `lupa-index` skill to run an update
    before concluding that the image does not exist.
