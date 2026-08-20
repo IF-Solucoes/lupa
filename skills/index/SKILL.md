@@ -102,6 +102,29 @@ prints a summary. Report
 what changed (`+N added · ~N changed · -N removed`) and the cost. Failures, if any,
 land in `runs/<date>.errors.jsonl`.
 
+## What a run writes down about each image
+
+A caption, generic tags, type and material, orientation, palette, whether the image
+has text baked in and a transcription of it — and, separately from the tags,
+**`entities`: the proper names carried by the piece**. Services, products,
+campaigns, brands, people, copied as written.
+
+That last one is the reason to reindex an old collection. Tags are generic by
+construction (`dog`, `clinic`, `indoor` — true of every veterinary clinic alive);
+`entities` is the part that belongs to this client and to no one else. It lands in
+`catalog.jsonl`, in its own **Entities** section of `INDEX.md` (complete, not
+truncated), and in one `by-entity/<name>.md` file per name, in the shape of
+`by-tag/`.
+
+Two honest things to tell the user:
+
+- The field is **empty on most photographs**, by design, and the model is instructed
+  never to guess a name from context. That is the only way the field stays
+  trustworthy: a made-up service name reads exactly like a real one.
+- **Indexes built before this existed carry no names.** They stay valid and readable
+  — the field is optional — but they answer nothing about names until they are
+  rebuilt, which costs a full description of every image.
+
 ## Rebuilding from scratch (rare, and expensive)
 
 ```bash

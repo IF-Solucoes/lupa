@@ -196,3 +196,125 @@ class TestTheRunReportRecordsTheTokens(IndexTestCase):
     def test_the_report_still_halves_a_batch_run(self):
         self.write(usage=self.meter((1_000_000, 1_000_000)), batch=True)
         self.assertIn("0.25", self.report())
+
+
+# A collection wide enough that the vocabulary cannot be printed whole: the real
+# one had 547 distinct tags behind a list of 40.
+WIDE = [{"id": str(n), "file": f"{n:03}.jpg", "url": f"https://drive/{n}",
+         "kind": "photo", "medium": "na", "orientation": "landscape",
+         "has_text": False, "hash": f"h{n}", "caption": "A dog",
+         "tags": ["dog", f"tag{n:03}"], "text": "", "entities": []}
+        for n in range(120)]
+
+
+class TestTheVocabularyDoesNotLieAboutItself(IndexTestCase):
+    """A truncated list presented as the whole list is worse than no list.
+
+    INDEX.md showed the 40 most frequent tags of 547 and said nothing about the
+    other 507. An agent read those 40 as the vocabulary of the collection and
+    came within one sentence of telling a client there was no printed material in
+    the archive — there were 13 tags about exactly that, all below the cut.
+    """
+
+    def index(self):
+        return (self.dir / "INDEX.md").read_text(encoding="utf-8")
+
+    def test_a_truncated_vocabulary_declares_the_total(self):
+        self.write(items=WIDE)                      # 121 distinct tags
+        self.assertIn("121", self.index())
+
+    def test_a_truncated_vocabulary_says_it_was_truncated(self):
+        self.write(items=WIDE)
+        text = self.index().lower()
+        self.assertTrue("most frequent" in text or "more frequent" in text, text[:400])
+
+    def test_a_truncated_vocabulary_points_at_the_complete_one(self):
+        self.write(items=WIDE)
+        self.assertIn("by-tag/", self.index())
+
+    def test_a_short_vocabulary_is_not_accused_of_being_truncated(self):
+        self.write()                                # 3 tags, all of them shown
+        self.assertNotIn("most frequent", self.index())
+
+
+class TestTheEntitiesGetTheirOwnSection(IndexTestCase):
+    ITEMS = [
+        {"id": "1", "file": "castra.jpg", "url": "https://drive/1", "kind": "design",
+         "medium": "digital", "orientation": "portrait", "has_text": True, "hash": "h1",
+         "caption": "Campaign piece", "tags": ["dog", "clinic"], "text": "CASTRAÇÃO",
+         "entities": ["Castração", "Clínica Veterinária Noroeste"]},
+        {"id": "2", "file": "gato.jpg", "url": "https://drive/2", "kind": "photo",
+         "medium": "na", "orientation": "landscape", "has_text": False, "hash": "h2",
+         "caption": "A cat on a table", "tags": ["cat"], "text": "", "entities": []},
+        {"id": "3", "file": "banho.jpg", "url": "https://drive/3", "kind": "design",
+         "medium": "digital", "orientation": "square", "has_text": True, "hash": "h3",
+         "caption": "Grooming post", "tags": ["dog"], "text": "BANHO E TOSA",
+         "entities": ["Banho e Tosa", "Castração"]},
+    ]
+
+    def index(self):
+        return (self.dir / "INDEX.md").read_text(encoding="utf-8")
+
+    def test_the_names_are_listed_with_their_counts(self):
+        self.write(items=self.ITEMS)
+        text = self.index()
+        self.assertIn("Castração", text)
+        self.assertIn("Banho e Tosa", text)
+        self.assertIn("Clínica Veterinária Noroeste", text)
+
+    def test_the_section_is_not_the_tag_vocabulary(self):
+        self.write(items=self.ITEMS)
+        self.assertIn("## Entities", self.index())
+
+    def test_a_collection_without_a_single_name_says_so(self):
+        """Silence would read as a bug in the writer. It is a fact about the
+        collection: nothing in it carries a name."""
+        self.write()                                # ITEMS carry no entities
+        self.assertIn("## Entities", self.index())
+        self.assertIn("no proper name", self.index().lower())
+
+    def test_the_catalog_carries_the_field(self):
+        self.write(items=self.ITEMS)
+        first = json.loads((self.dir / "catalog.jsonl").read_text(
+            encoding="utf-8").splitlines()[0])
+        self.assertIn("entities", first)
+
+    def test_an_item_written_before_the_field_existed_still_indexes(self):
+        """Every index already on disk was written without `entities`. None of
+        them may crash the writer or vanish from the output."""
+        old = [{k: v for k, v in item.items() if k != "entities"}
+               for item in self.ITEMS]
+        self.write(items=old)
+        self.assertEqual(len((self.dir / "catalog.jsonl").read_text(
+            encoding="utf-8").strip().splitlines()), 3)
+        self.assertIn("## Entities", self.index())
+
+
+class TestByEntity(IndexTestCase):
+    ITEMS = TestTheEntitiesGetTheirOwnSection.ITEMS
+
+    def test_one_file_per_name(self):
+        self.write(items=self.ITEMS)
+        names = sorted(p.stem for p in (self.dir / "by-entity").glob("*.md"))
+        self.assertEqual(names, ["banho-e-tosa", "castracao",
+                                 "clinica-veterinaria-noroeste"])
+
+    def test_the_file_lists_every_image_that_carries_the_name(self):
+        self.write(items=self.ITEMS)
+        text = (self.dir / "by-entity" / "castracao.md").read_text(encoding="utf-8")
+        self.assertIn("castra.jpg", text)
+        self.assertIn("banho.jpg", text)
+
+    def test_the_file_keeps_the_name_as_written(self):
+        self.write(items=self.ITEMS)
+        text = (self.dir / "by-entity" / "castracao.md").read_text(encoding="utf-8")
+        self.assertIn("Castração", text)
+
+    def test_a_name_that_vanished_leaves_no_orphan_file(self):
+        self.write(items=self.ITEMS)
+        self.write(items=[self.ITEMS[1], self.ITEMS[2]])
+        self.assertFalse((self.dir / "by-entity" / "clinica-veterinaria-noroeste.md").exists())
+
+    def test_a_collection_with_no_names_creates_no_directory(self):
+        self.write()
+        self.assertFalse((self.dir / "by-entity").exists())

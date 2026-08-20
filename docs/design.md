@@ -136,7 +136,9 @@ Metadata asserts what it can prove; everything that needs eyes waits for the mod
 |---|---|---|
 | Geometry (`w`/`h`) | zero | `aspect` and `orientation` — arithmetic |
 | EXIF (`Make`/`Model`) | zero | camera present → `source: camera`; absent → `generated` |
-| Vision model | already paid | `kind`, `medium`, `has_text`, the transcribed `text`, caption, tags, palette |
+| Vision model | already paid | `kind`, `medium`, `has_text`, the transcribed `text`, the named `entities`, caption, tags, palette |
+
+`tags` and `entities` are two lists on purpose. Tags are generic — the vocabulary of 875 images from one veterinary clinic was `dog`, `medical`, `clinic`, `gloves`: true of every clinic on earth, and therefore worth nothing to the agency that owns this one. `entities` holds the proper names written on the pieces — the services, products, campaigns, brands and people. Merged into one list they could never be separated again, and "what does this client specifically have" would stay unanswerable. The model is told never to infer one: an invented proper noun is worse than an empty field, because a proper noun is what a reader stops checking.
 
 The heuristics that used to sit between the two — text density decides
 `design`/`diagram`, aspect ratio decides social design — were removed rather than

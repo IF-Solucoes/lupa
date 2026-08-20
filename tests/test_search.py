@@ -109,3 +109,45 @@ class TestLabelsAreNotSearchable(unittest.TestCase):
     def test_labels_remain_in_the_catalog_for_reference(self):
         result = search(self.CATALOG, "automation")[0]
         self.assertIn("Heineken", result["labels"])
+
+
+class TestTheProperNounsAreSearchable(unittest.TestCase):
+    """`entities` is the field that answers "what does THIS client have".
+
+    Kept out of `tags` on purpose — the two answer different questions — which
+    would leave it unsearchable unless the scorer is told about it. A hit on a
+    proper noun is close to decisive, so it outranks even a tag.
+    """
+
+    CATALOG = [
+        {"id": "a", "file": "post-01.jpg", "kind": "design", "medium": "digital",
+         "orientation": "portrait", "has_text": True, "caption": "Campaign piece",
+         "tags": ["dog", "clinic"], "text": "CASTRAÇÃO SOLIDÁRIA em maio",
+         "entities": ["Castração Solidária"]},
+        {"id": "b", "file": "gato.jpg", "kind": "photo", "medium": "na",
+         "orientation": "landscape", "has_text": False, "caption": "A cat resting",
+         "tags": ["cat"], "text": "", "entities": []},
+    ]
+
+    def test_a_name_only_in_entities_is_found(self):
+        catalog = [dict(self.CATALOG[0], text="", caption="A piece"), self.CATALOG[1]]
+        self.assertEqual([r["id"] for r in search(catalog, "solidária")], ["a"])
+
+    def test_the_reason_names_the_field(self):
+        results = search(self.CATALOG, "solidária")
+        self.assertIn("entities:", results[0]["_reason"])
+
+    def test_a_name_outweighs_a_tag(self):
+        catalog = [
+            {"id": "tagged", "file": "x.jpg", "tags": ["castracao"], "caption": "",
+             "text": "", "entities": []},
+            {"id": "named", "file": "y.jpg", "tags": [], "caption": "",
+             "text": "", "entities": ["Castracao"]},
+        ]
+        self.assertEqual([r["id"] for r in search(catalog, "castracao")],
+                         ["named", "tagged"])
+
+    def test_a_catalog_written_before_the_field_existed_still_searches(self):
+        old = [{k: v for k, v in item.items() if k != "entities"}
+               for item in self.CATALOG]
+        self.assertEqual([r["id"] for r in search(old, "cat")], ["b"])

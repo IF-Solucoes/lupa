@@ -65,6 +65,16 @@ def check(index_dir):
     if catalog_tags and not (index_dir / "by-tag").exists():
         errors.append("the catalog has tags but there is no by-tag/ directory")
 
+    # `entities` is optional and additive: an index written before the field
+    # existed has no key at all on any line, and is valid. What is checked is
+    # only the consistency of an index that DOES carry names.
+    named = {name for item in items for name in (item.get("entities") or [])}
+    if named and not (index_dir / "by-entity").exists():
+        errors.append("the catalog has entities but there is no by-entity/ directory")
+    if named and "## Entities" not in (index_dir / "INDEX.md").read_text(
+            encoding="utf-8"):
+        errors.append("the catalog has entities but INDEX.md has no Entities section")
+
     return errors, warnings
 
 

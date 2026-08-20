@@ -19,7 +19,10 @@ TOOLS = [
         "description": (
             "Search images in a visual collection index and return the best "
             "candidates with links and the reason each one matched. Always use this "
-            "instead of opening the images: the index is text and costs almost nothing."
+            "instead of opening the images: the index is text and costs almost nothing. "
+            "Proper names — services, products, campaigns, brands, people — are "
+            "indexed as `entities` and rank above every other field, so searching "
+            "the client's own vocabulary is the sharpest query available."
         ),
         "inputSchema": {
             "type": "object",
@@ -123,12 +126,19 @@ class Server:
         lines = [f"{len(results)} {noun} (out of {catalog_size} images):", ""]
         for result in results:
             kind = f"{result.get('kind')}/{result.get('medium')}"
-            lines.append(
+            block = [
                 f"- **{result.get('file')}** [{kind}, {result.get('orientation')}] — "
-                f"{result.get('caption', '')}\n"
-                f"  tags: {', '.join(result.get('tags') or [])}\n"
-                f"  {result.get('url', '')}\n"
-                f"  _matched on: {result.get('_reason')}_")
+                f"{result.get('caption', '')}",
+                f"  tags: {', '.join(result.get('tags') or [])}",
+            ]
+            # Only when there is one. This field is empty on most images by
+            # design, and a bare "entities:" repeated down the list would read
+            # as a defect rather than as the ordinary answer.
+            if result.get("entities"):
+                block.append(f"  entities: {', '.join(result['entities'])}")
+            block += [f"  {result.get('url', '')}",
+                      f"  _matched on: {result.get('_reason')}_"]
+            lines.append("\n".join(block))
         return "\n".join(lines)
 
     def tool_status(self, _args):

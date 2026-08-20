@@ -92,3 +92,36 @@ class TestStatus(McpTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheResultShowsTheProperNames(McpTestCase):
+    """A field an agent never sees in the result is a field it will not use.
+
+    `entities` is what tells the agent this image is about THIS client's service
+    rather than a generic clinic scene, so it belongs on the candidate line — but
+    only when there is one, because a bare `entities:` on every photograph is
+    noise on the field that is empty by design.
+    """
+
+    def named(self):
+        collection = self.root / "if-editorial"
+        item = dict(ITEM, id="2", file="castra.jpg", caption="Campaign piece",
+                    tags=["dog"], entities=["Castração Solidária"])
+        collection.joinpath("catalog.jsonl").write_text(
+            json.dumps(ITEM, ensure_ascii=False) + "\n"
+            + json.dumps(item, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def test_the_names_are_printed_on_the_candidate(self):
+        self.named()
+        text = self.server.tool_search({"query": "campaign"})
+        self.assertIn("Castração Solidária", text)
+
+    def test_an_image_with_no_name_gets_no_empty_line(self):
+        self.named()
+        text = self.server.tool_search({"query": "bridge"})
+        self.assertNotIn("entities:", text)
+
+    def test_a_name_is_searchable_through_the_tool(self):
+        self.named()
+        text = self.server.tool_search({"query": "solidária"})
+        self.assertIn("castra.jpg", text)

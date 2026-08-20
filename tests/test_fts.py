@@ -107,3 +107,60 @@ class TestProjection(FtsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(available(), "sqlite without FTS5")
+class TestTheProjectionCarriesTheProperNouns(unittest.TestCase):
+    """The FTS5 database is the fast path, so a field absent from it is a field
+    that cannot be found in any collection that has one."""
+
+    CATALOG = [
+        {"id": "a", "file": "post.jpg", "kind": "design", "medium": "digital",
+         "orientation": "portrait", "has_text": True, "caption": "A campaign piece",
+         "tags": ["dog"], "text": "", "entities": ["Castracao Solidaria"]},
+        {"id": "b", "file": "cat.jpg", "kind": "photo", "medium": "na",
+         "orientation": "landscape", "has_text": False, "caption": "A cat",
+         "tags": ["cat"], "text": "", "entities": []},
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "index.db"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_name_only_in_entities_is_found(self):
+        build(self.CATALOG, self.db)
+        self.assertEqual([r["id"] for r in query(self.db, "solidaria")], ["a"])
+
+    def test_a_catalog_without_the_field_still_builds(self):
+        old = [{k: v for k, v in item.items() if k != "entities"}
+               for item in self.CATALOG]
+        build(old, self.db)
+        self.assertEqual([r["id"] for r in query(self.db, "cat")], ["b"])
+
+    def test_a_database_built_before_the_column_existed_is_still_queryable(self):
+        """index.db is derived and gitignored, but it is NOT rebuilt until the
+        next indexing run — and indexing is what costs money. Every database on
+        disk today has four columns; ranking must not ask for five."""
+        import sqlite3
+
+        connection = sqlite3.connect(self.db)
+        connection.executescript("""
+            CREATE TABLE items (rowid INTEGER PRIMARY KEY, id TEXT UNIQUE,
+                payload TEXT NOT NULL, kind TEXT, medium TEXT, orientation TEXT,
+                has_text INTEGER);
+            CREATE VIRTUAL TABLE fts USING fts5(file, caption, tags, text,
+                tokenize = "porter unicode61 remove_diacritics 2");
+        """)
+        with connection:
+            connection.execute(
+                "INSERT INTO items (rowid, id, payload, kind, medium, orientation,"
+                " has_text) VALUES (1,'b','{\"id\": \"b\"}','photo','na','landscape',0)")
+            connection.execute(
+                "INSERT INTO fts (rowid, file, caption, tags, text)"
+                " VALUES (1,'cat.jpg','A cat','cat','')")
+        connection.close()
+
+        self.assertEqual([r["id"] for r in query(self.db, "cat")], ["b"])

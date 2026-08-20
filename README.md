@@ -220,6 +220,7 @@ was always empty. It is no longer written.
 ├── INDEX.md          # entry point (~2 KB): counts, vocabulary, how to query
 ├── catalog.jsonl     # one JSON line per image — for field-level filtering
 ├── by-tag/<tag>.md   # inverted index, readable without running code
+├── by-entity/<name>.md # the same, by proper name — absent when nothing is named
 ├── contact-sheets/   # one grid per frequent tag, for human curation
 ├── MANIFEST.json     # hashes — what makes updates incremental
 └── runs/<date>.md    # what each run changed
@@ -232,6 +233,7 @@ Every catalog line follows [`schema/index-v1.json`](schema/index-v1.json):
  "kind":"design","medium":"physical","source":"camera","orientation":"landscape",
  "caption":"Printed banner standing at a booth, white logo on blue",
  "tags":["banner","event","printed","blue"],"has_text":true,
+ "entities":["Feira do Livro","Sesc Pinheiros"],
  "palette":["#052f41","#ffffff"],"hash":"…","v":1}
 ```
 
@@ -251,6 +253,27 @@ nothing else:
 
 A printed mockup is `design` + `physical`. A clean photo ready to receive type is
 `photo` + `has_text: false`.
+
+### `tags` are generic, `entities` are yours
+
+`tags` say what kind of scene an image is — `dog`, `clinic`, `indoor` — and a
+vocabulary of them describes a subject, not a client: 875 images from one
+veterinary clinic produced 547 tags and not one proper noun. `entities` carries the
+other half: the service, product, campaign, brand or person **named on the piece**,
+copied as written.
+
+The two are deliberately separate lists. Mixed into one, "what does this client
+have" stops being answerable at all — there is no way to sort a proper noun back
+out of a bag of keywords.
+
+The model is instructed never to infer one: a name is written down only when it is
+legible in the image or unmistakable in it, and `[]` is the ordinary answer for a
+photograph. A hallucinated proper noun is worse than an empty field, because a
+proper noun is the one thing a reader stops checking.
+
+The field is **optional**: an index written before it existed carries no key, stays
+valid against `schema/index-v1.json`, and reads fine — it simply has nothing to say
+about names until it is rebuilt.
 
 ## The index reads without lupa
 

@@ -1,7 +1,7 @@
 {
   "name": "lupa",
   "displayName": "lupa",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Visual collection index for AI agents: describe every image in a Google Drive folder or local directory once, then search it as text — the agent never opens the images.",
   "author": {
     "name": "IF Soluções"
