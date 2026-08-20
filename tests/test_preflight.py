@@ -222,3 +222,55 @@ class TestCostHonesty(unittest.TestCase):
         checks = diagnose(drive_target(), env={**FULL_ENV, "LUPA_MODEL": "gemini-9-imagined"},
                           existing_files=set())
         self.assertIn("gemini-9-imagined", format_report(checks, drive_target()))
+
+
+class TestARebuildIsNotAnUpdate(unittest.TestCase):
+    """The line read right before authorizing the spend has to be true.
+
+    Regression, 2026-08-20: with `--rebuild` over an existing index the preflight
+    still printed "already exists — this is an update, only changes cost
+    anything". Under a rebuild nothing is an "only change": every image is
+    described again and every image is billed again.
+    """
+
+    def state(self, **kw):
+        checks = diagnose(drive_target(), env=FULL_ENV, existing_files=set(), **kw)
+        return [x for x in checks if x.name == "index state"][0]
+
+    def test_it_does_not_call_a_rebuild_an_update(self):
+        message = self.state(index_exists=True, rebuild=True).message.lower()
+        self.assertNotIn("only changes cost", message)
+        self.assertNotIn("this is an update", message)
+
+    def test_it_says_everything_gets_described_again(self):
+        message = self.state(index_exists=True, rebuild=True).message.lower()
+        self.assertIn("rebuild", message)
+        self.assertIn("every image", message)
+
+    def test_it_says_the_previous_index_is_backed_up_first(self):
+        check = self.state(index_exists=True, rebuild=True)
+        self.assertIn(".backup", f"{check.message} {check.how_to_fix}")
+
+    def test_a_rebuild_is_flagged_rather_than_waved_through(self):
+        self.assertEqual(WARNING, self.state(index_exists=True, rebuild=True).status)
+
+    def test_it_never_blocks_the_run(self):
+        checks = diagnose(drive_target(), env=FULL_ENV,
+                          existing_files={"/existe/oauth.json", "/existe/token.json"},
+                          index_exists=True, rebuild=True)
+        self.assertFalse(has_blocker(checks))
+
+    def test_a_rebuild_with_no_index_yet_is_just_a_first_run(self):
+        message = self.state(index_exists=False, rebuild=True).message.lower()
+        self.assertIn("first run", message)
+
+    def test_without_rebuild_the_update_line_is_exactly_what_it_was(self):
+        check = self.state(index_exists=True)
+        self.assertEqual(OK, check.status)
+        self.assertEqual("already exists — this is an update, only changes cost "
+                         "anything", check.message)
+
+    def test_the_rebuild_line_survives_the_report_formatter(self):
+        checks = diagnose(drive_target(), env=FULL_ENV, existing_files=set(),
+                          index_exists=True, rebuild=True)
+        self.assertIn("every image", format_report(checks, drive_target()))

@@ -180,7 +180,13 @@ def run(collection, index_dir, source, describe, mode="update", now="",
                               rebuild=rebuild, confirm=confirm)
 
     remote = source.list()
-    manifest = _load_manifest(index_dir)
+    # A rebuild is from scratch, and that is decided HERE — not later, next to
+    # the backup. Loading the manifest under --rebuild is what made the flag a
+    # no-op: reconcile compared hashes that had not moved, produced an empty
+    # plan, and the run reported "nothing changed" over a collection it was
+    # asked to describe again. With no manifest every live image is `added`,
+    # which is exactly what a rebuild means.
+    manifest = {"items": {}} if rebuild else _load_manifest(index_dir)
     plan = reconcile(remote, manifest)
     cost = estimate_cost(len(plan.to_describe), batch=batch)
 
@@ -194,7 +200,11 @@ def run(collection, index_dir, source, describe, mode="update", now="",
 
     index_dir.mkdir(parents=True, exist_ok=True)
     with Lock(index_dir):
-        stored = _load_catalog(index_dir)
+        # The other half of the same decision: `stored` is what lets an
+        # `unchanged` item keep the description already paid for. Under a
+        # rebuild there is no such thing — reusing an old description would make
+        # the rebuild reproduce precisely what it was run to replace.
+        stored = {} if rebuild else _load_catalog(index_dir)
         by_id = {entry["id"]: entry for entry in remote}
         pending = plan.to_describe
 

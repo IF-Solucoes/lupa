@@ -313,22 +313,17 @@ class TestCosmeticProbeNeverLogsIn(unittest.TestCase):
                       "the Drive name stopped reaching the collection name")
 
 
-class TestTheExitCodeTellsTheTruth(unittest.TestCase):
-    """A failed run must be detectable by a script, not only by a careful reader.
+class IndexCommandHarness(unittest.TestCase):
+    """The rig the behavioral `lupa index` tests below share. It holds no test.
 
-    Regression, 2026-08-20: 875 of 875 images failed with the same HTTP 404 and
-    `lupa index` printed "Done." on the first line, "875 images failed" on the
-    last, and exited 0 — so `lupa index && lupa publish` published nothing.
-
-    Behavioral on purpose: an exit code is only observable by running the command.
+    An exit code, a printed line and the order of the two are only observable by
+    running the command, so those tests drive `cli.main` for real and stub only
+    what would reach the network or a credential.
     """
 
     KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR",
             "GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG",
             "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN")
-
-    RETIRED = ("HTTP 404: gemini-2.5-flash-lite is no longer available; "
-               "use gemini-3.5-flash-lite instead")
 
     class FakeSource:
         """Two images, no network, no credentials."""
@@ -381,17 +376,45 @@ class TestTheExitCodeTellsTheTruth(unittest.TestCase):
         cli.build_source = lambda *a, **k: (source, None)
         cli.make_describer = lambda *a, **k: describe
 
+        # Per image by default, so `describe` is the stub above and no batch is
+        # ever built. A test asking for --resume-batch is asking for the batch
+        # path, and the CLI refuses the two flags together on purpose.
+        base = ["--yes", "--no-push", "--no-contact-sheets"]
+        if "--resume-batch" not in extra:
+            base.append("--no-batch")
+
         printed, code = io.StringIO(), 0
         try:
             with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
                 try:
-                    cli.main(["index", str(self.collection), "--yes", "--no-push",
-                              "--no-batch", "--no-contact-sheets", *extra])
+                    cli.main(["index", str(self.collection), *base, *extra])
                 except SystemExit as stop:
-                    code = stop.code if isinstance(stop.code, int) else 1
+                    if isinstance(stop.code, int) or stop.code is None:
+                        code = stop.code or 0
+                    else:
+                        # sys.exit("message") does not print anything itself: the
+                        # interpreter does, on the way out, and catching the
+                        # exception here is what would swallow it. Refusals are
+                        # made of that message, so it goes into the capture.
+                        code = 1
+                        print(stop.code)
         finally:
             cli.build_source, cli.make_describer = original_source, original_describer
         return code, printed.getvalue()
+
+
+class TestTheExitCodeTellsTheTruth(IndexCommandHarness):
+    """A failed run must be detectable by a script, not only by a careful reader.
+
+    Regression, 2026-08-20: 875 of 875 images failed with the same HTTP 404 and
+    `lupa index` printed "Done." on the first line, "875 images failed" on the
+    last, and exited 0 — so `lupa index && lupa publish` published nothing.
+
+    Behavioral on purpose: an exit code is only observable by running the command.
+    """
+
+    RETIRED = ("HTTP 404: gemini-2.5-flash-lite is no longer available; "
+               "use gemini-3.5-flash-lite instead")
 
     def working_model(self):
         def describe(item, image, mime):
@@ -627,3 +650,166 @@ class TestTheScreenClosesTheCycle(unittest.TestCase):
         counted = max(i for i, line in enumerate(lines) if "counted" in line.lower())
         saved = max(i for i, line in enumerate(lines) if "saved as" in line)
         self.assertGreater(counted, saved)
+
+
+class TestRebuildReallyRebuilds(IndexCommandHarness):
+    """The reproduction, from the command line, of what `--rebuild` did instead.
+
+    Regression, 2026-08-20, against a real collection of 15 images already
+    indexed and unchanged:
+
+        $ python -m lupa index <url> --rebuild --confirm "2-kit-marca" --yes
+          ✓ index state: already exists — this is an update, only changes cost
+        Plan for this run
+          +0 added · ~0 changed · -0 removed · =15 unchanged
+          images to describe: 0
+        Nothing changed since the last run. Nothing to do, nothing to pay.
+        exit 0
+
+    A backup was taken, nothing was described, the index came out byte for byte
+    what it was — and the exit code said it had worked. `skills/index/SKILL.md`
+    documents this command as the way to pick up a schema change; the schema had
+    just gained `entities`.
+    """
+
+    def model(self, caption="ok"):
+        calls = []
+
+        def describe(item, image, mime):
+            calls.append(item["id"])
+            return {"caption": caption, "tags": ["t"]}
+
+        describe.calls = calls
+        return describe
+
+    def already_indexed(self):
+        code, _ = self.run_index(self.model("first pass"))
+        self.assertEqual(0, code, "the setup run itself failed")
+
+    def rebuild(self, describe):
+        return self.run_index(describe, "--rebuild", "--confirm", "photos")
+
+    def test_every_image_is_described_again(self):
+        self.already_indexed()
+        again = self.model("rebuilt")
+        code, _ = self.rebuild(again)
+        self.assertEqual(0, code)
+        self.assertEqual(["a", "b"], sorted(again.calls))
+
+    def test_it_never_claims_nothing_changed(self):
+        self.already_indexed()
+        _, printed = self.rebuild(self.model("rebuilt"))
+        self.assertNotIn("Nothing changed since the last run", printed)
+
+    def test_the_plan_on_screen_counts_the_whole_collection(self):
+        self.already_indexed()
+        _, printed = self.rebuild(self.model("rebuilt"))
+        self.assertIn("images to describe: 2", printed)
+
+    def test_the_price_on_screen_is_not_zero(self):
+        """It is the number a person reads before authorizing a whole acervo."""
+        self.already_indexed()
+        _, printed = self.rebuild(self.model("rebuilt"))
+        estimate = next(line for line in printed.splitlines()
+                        if "estimated cost" in line)
+        self.assertNotIn("US$ 0.00", estimate)
+
+    def test_the_preflight_does_not_call_it_an_update(self):
+        self.already_indexed()
+        _, printed = self.rebuild(self.model("rebuilt"))
+        state = next(line for line in printed.splitlines() if "index state" in line)
+        self.assertNotIn("only changes cost anything", state)
+
+    def test_the_new_descriptions_are_the_ones_on_disk(self):
+        self.already_indexed()
+        self.rebuild(self.model("rebuilt"))
+        catalog = (self.home / "indexes" / "photos" / "catalog.jsonl").read_text(
+            encoding="utf-8")
+        self.assertIn("rebuilt", catalog)
+        self.assertNotIn("first pass", catalog)
+
+    def test_the_previous_index_is_kept_in_the_backup(self):
+        self.already_indexed()
+        self.rebuild(self.model("rebuilt"))
+        backups = list((self.home / "indexes" / "photos" / ".backup").glob("*"))
+        self.assertEqual(1, len(backups))
+        kept = (backups[0] / "catalog.jsonl").read_text(encoding="utf-8")
+        self.assertIn("first pass", kept)
+
+    def test_without_rebuild_the_second_run_still_costs_nothing(self):
+        """The promise of the tool, guarded on the same path."""
+        self.already_indexed()
+        again = self.model("must not happen")
+        code, printed = self.run_index(again)
+        self.assertEqual(0, code)
+        self.assertEqual([], again.calls)
+        self.assertIn("Nothing changed since the last run", printed)
+
+
+class TestRebuildAndTheOtherRecoveryFlags(IndexCommandHarness):
+    """`--rebuild` next to the two flags that also decide what gets re-described.
+
+    Neither may end in a surprise: `--retry-failed` edits MANIFEST.json in place,
+    and it does so BEFORE the pipeline takes its backup — under a rebuild that
+    would quietly alter the copy the backup exists to preserve, for no gain at
+    all, since a rebuild re-describes every image anyway.
+    """
+
+    def model(self, caption="ok"):
+        def describe(item, image, mime):
+            return {"caption": caption, "tags": ["t"]}
+        return describe
+
+    def index_dir(self):
+        return self.home / "indexes" / "photos"
+
+    def test_retry_failed_under_a_rebuild_says_it_is_doing_nothing(self):
+        self.run_index(self.model("first pass"))
+        _, printed = self.run_index(self.model("rebuilt"), "--rebuild",
+                                    "--confirm", "photos", "--retry-failed")
+        self.assertIn("--retry-failed", printed)
+        self.assertIn("--rebuild", printed)
+
+    def test_retry_failed_under_a_rebuild_does_not_touch_the_manifest(self):
+        import json
+
+        self.run_index(self.model("first pass"))
+        manifest = self.index_dir() / "MANIFEST.json"
+        (self.index_dir() / "runs").mkdir(exist_ok=True)
+        (self.index_dir() / "runs" / "2026-08-20T10-00-00.errors.jsonl").write_text(
+            json.dumps({"id": "a", "file": "a.png", "error": "boom"}) + "\n",
+            encoding="utf-8")
+        before = manifest.read_text(encoding="utf-8")
+
+        self.run_index(self.model("rebuilt"), "--rebuild", "--confirm", "photos",
+                       "--retry-failed")
+        backups = list((self.index_dir() / ".backup").glob("*"))
+        kept = (backups[0] / "MANIFEST.json").read_text(encoding="utf-8")
+        self.assertEqual(before, kept,
+                         "the backup must hold the manifest exactly as it was")
+
+    def test_a_rebuild_still_refuses_to_run_over_a_batch_already_paid_for(self):
+        from lupa import gemini, inflight
+
+        self.run_index(self.model("first pass"))
+        inflight.remember(self.index_dir(), "batches/abc", "photos",
+                          gemini.DEFAULT_MODEL, ["a", "b"])
+        code, printed = self.run_index(self.model("rebuilt"), "--rebuild",
+                                       "--confirm", "photos")
+        self.assertNotEqual(0, code)
+        self.assertIn("ALREADY CHARGED", printed)
+
+    def test_resuming_a_batch_that_covered_less_than_the_rebuild_is_refused(self):
+        """The receipt's fingerprint is the id set that was paid for. A rebuild
+        describes every image, so a batch submitted for a subset cannot serve it
+        — and the answers come back keyed by id, so accepting would write a
+        silently incomplete index."""
+        from lupa import gemini, inflight
+
+        self.run_index(self.model("first pass"))
+        inflight.remember(self.index_dir(), "batches/abc", "photos",
+                          gemini.DEFAULT_MODEL, ["a"])
+        code, printed = self.run_index(self.model("rebuilt"), "--rebuild",
+                                       "--confirm", "photos", "--resume-batch")
+        self.assertNotEqual(0, code)
+        self.assertIn("changed since that batch was submitted", printed)

@@ -465,3 +465,102 @@ class TestTheNamesReachTheCatalog(PipelineTestCase):
         self.assertEqual(self.catalog()[0]["entities"], [])
         self.assertIn("## Entities", self.index_md())
         self.assertFalse((self.dir / "by-entity").exists())
+
+
+class TestRebuildActuallyRebuilds(PipelineTestCase):
+    """`--rebuild` has to describe every image again — or it is not a rebuild.
+
+    Regression, 2026-08-20: run over a collection of 15 images already indexed and
+    unchanged, `lupa index <url> --rebuild --confirm "<name>"` loaded the previous
+    MANIFEST.json, reconciled against it, found nothing different, printed
+    "Nothing changed since the last run" and exited 0. It had taken a backup and
+    described nothing. The schema had just gained `entities`, and the documented
+    way to pick that up ("when the schema changed") was exactly this command.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        self.execute(self.source, mode="index")
+        self.model.calls.clear()
+        self.source.fetched.clear()
+
+    def rebuild(self, **kw):
+        return self.execute(self.source, mode="index", rebuild=True,
+                            confirm="if-editorial", **kw)
+
+    def test_every_image_is_described_again(self):
+        self.rebuild()
+        self.assertEqual(sorted(self.model.calls), ["a", "b"])
+
+    def test_the_plan_counts_them_all_as_work(self):
+        result = self.rebuild(dry_run=True)
+        self.assertEqual(sorted(result["plan"].to_describe), ["a", "b"])
+        self.assertEqual(result["plan"].unchanged, [])
+        self.assertFalse(result["plan"].empty)
+
+    def test_the_estimate_is_the_price_of_the_whole_collection(self):
+        from lupa.caption import estimate_cost
+
+        result = self.rebuild(dry_run=True)
+        self.assertEqual(estimate_cost(2, batch=True), result["estimated_cost"])
+        self.assertGreater(result["estimated_cost"], 0)
+
+    def test_the_old_description_is_replaced_not_reused(self):
+        def second_pass(item, image, mime):
+            return {"caption": "rebuilt", "tags": ["t"],
+                    "entities": ["Castração Solidária"]}
+
+        self.rebuild(describe=second_pass)
+        captions = {item["id"]: item["caption"] for item in self.catalog()}
+        self.assertEqual({"a": "rebuilt", "b": "rebuilt"}, captions)
+
+    def test_a_failed_rebuild_does_not_silently_empty_the_catalog(self):
+        """No description, no row — the backup is what holds the old ones."""
+        def always_fails(item, image, mime):
+            raise RuntimeError("model retired")
+
+        result = self.rebuild(describe=always_fails)
+        self.assertEqual([], self.catalog())
+        self.assertIn("FAILED", result["verdict"])
+
+    def test_the_backup_is_taken_before_anything_is_overwritten(self):
+        def second_pass(item, image, mime):
+            return {"caption": "rebuilt", "tags": ["t"]}
+
+        self.rebuild(describe=second_pass, now="2026-08-21T09-00-00")
+        kept = self.dir / ".backup" / "2026-08-21T09-00-00" / "catalog.jsonl"
+        self.assertTrue(kept.exists(), "the previous index must be copied first")
+        self.assertIn("description of a.png", kept.read_text(encoding="utf-8"))
+
+
+class TestWithoutRebuildTheIncrementalIsUntouched(PipelineTestCase):
+    """The promise of the tool. Making rebuild work may not cost it anything."""
+
+    def setUp(self):
+        super().setUp()
+        self.source = FakeSource([a_file("a", "1"), a_file("b", "2")])
+        self.execute(self.source, mode="index")
+        self.model.calls.clear()
+        self.source.fetched.clear()
+
+    def test_an_unchanged_collection_still_describes_nothing(self):
+        result = self.execute(self.source)
+        self.assertEqual([], self.model.calls)
+        self.assertEqual([], self.source.fetched)
+        self.assertEqual(sorted(result["plan"].unchanged), ["a", "b"])
+
+    def test_an_unchanged_collection_still_costs_nothing(self):
+        result = self.execute(self.source, dry_run=True)
+        self.assertEqual(0.0, result["estimated_cost"])
+
+    def test_only_the_changed_image_is_paid_for_again(self):
+        self.source.files[0] = a_file("a", "NEW-HASH")
+        self.execute(self.source)
+        self.assertEqual(["a"], self.model.calls)
+
+    def test_the_descriptions_already_paid_for_survive(self):
+        self.source.files.append(a_file("c", "3"))
+        self.execute(self.source)
+        kept = {item["id"]: item["caption"] for item in self.catalog()}
+        self.assertEqual("description of a.png", kept["a"])

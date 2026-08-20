@@ -84,7 +84,7 @@ def _cost_check(env, model):
 
 
 def diagnose(target, env, existing_files=None, index_exists=False, env_file=None,
-             model=None):
+             model=None, rebuild=False):
     """Returns the checks, in reading order.
 
     env_file is the settings file actually in use — naming it beats telling the
@@ -94,6 +94,11 @@ def diagnose(target, env, existing_files=None, index_exists=False, env_file=None
     caller resolves it. Passing it explicitly is for tests and for a caller that
     already knows; leaving it out must never report on a different model than the
     one about to be billed.
+
+    rebuild is the one flag that changes what "the index already exists" means
+    for the wallet, and this report is read immediately before the spend is
+    authorized — so it is a plain boolean, defaulted off, and it only reaches the
+    last check.
     """
     from lupa.gemini import DEFAULT_MODEL
 
@@ -163,7 +168,21 @@ def diagnose(target, env, existing_files=None, index_exists=False, env_file=None
     checks.append(_cost_check(env, model))
 
     # 5. What this run will do
-    if index_exists:
+    if index_exists and rebuild:
+        # The line above this one used to say "only changes cost anything" while
+        # --rebuild was on the command line, which is the opposite of true: a
+        # rebuild describes and pays for EVERY image. It is the last sentence
+        # before the confirmation, so it is also flagged rather than ticked.
+        checks.append(Check(
+            "index state", WARNING,
+            "already exists, and --rebuild discards it — this is NOT an "
+            "incremental update: every image is described again, and every image "
+            "is billed again",
+            "The previous index is copied to .backup/<timestamp>/ before "
+            "anything is written.\n"
+            "Drop --rebuild to run the ordinary update, where only what changed "
+            "costs anything."))
+    elif index_exists:
         checks.append(Check(
             "index state", OK,
             "already exists — this is an update, only changes cost anything"))
