@@ -66,8 +66,18 @@ Before any spending, the command prints a diagnosis and a plan:
 - **`!` (warning)** — it still works. The common case: the folder given is Drive
   mounted on disk. Mention what the user would gain by pasting the Drive URL
   (shareable https links, a stable id per file) without forcing them to change.
-- **Plan** — how many images will be described and what it costs. If it reports
-  "Nothing changed", the run is over: report that and stop.
+- **Plan** — how many images will be described and what it costs. An empty plan
+  means one of two opposite things, and they must never be reported alike:
+  - **`Nothing changed since the last run`** — the incremental working as promised.
+    The run is over: report it and stop. It exits 0.
+  - **`✋ Nothing found to index`** — the collection came back with no image at all.
+    **Do not report this as success.** It exits non-zero. Relay the listed causes
+    verbatim — the likeliest on Drive is that the folder was never shared with this
+    account, because Drive answers a listing you may not see with an empty list
+    rather than an error. Nothing was indexed and nothing was spent.
+
+**The exit code outranks the text.** Any non-zero exit from `lupa index` is a failed
+run, however friendly some line above it reads.
 
 To see only the plan: `--dry-run`.
 To run unattended: `--yes` — but only after you have read the plan.
@@ -78,7 +88,7 @@ To run unattended: `--yes` — but only after you have read the plan.
 |---|---|
 | `--no-push` | the index must not leave the machine. By default a Drive collection gets its `_lupa/` folder written back into the Drive folder, where everyone who can see the collection can read every caption. Offer this flag whenever the material is confidential — nobody else will |
 | `--retry-failed` | the last run reported failures and the user wants them described |
-| `--resume-batch` | a previous run died waiting on its batch; lupa refuses to start until that batch is collected or given up |
+| `--resume-batch` | a previous run died waiting on its batch; lupa refuses to start until that batch is collected or given up. lupa prints the exact command — paste it as written, target and all |
 | `--no-recursive` | the user explicitly wants only the top folder |
 | `--no-batch` | the user needs the index now and accepts paying twice as much |
 | `--workers N` | tuning parallelism when batch is off (default 8) |
@@ -109,3 +119,4 @@ write. Do this only when the schema changed or the index is corrupt.
 | `✗ Google Drive access` | the OAuth client JSON is missing; the message lists the 3 steps |
 | `I could not make sense of "<x>"` | the target is not a URL, an id, or an existing folder — ask the user for the Drive folder URL |
 | `⏳ Another run is using this index` | wait, or delete `_lupa/.lock` if you are sure |
+| `is still registered as in flight` | a batch was ALREADY CHARGED and never collected. Paste the `Collect it:` command exactly as printed — it names the target the user typed, and shortening it to the collection name is how this instruction used to dead-end. Never rerun without `--resume-batch`: that pays for the same images twice |

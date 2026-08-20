@@ -44,11 +44,28 @@ class TestLocalDownscale(unittest.TestCase):
 
 
 class TestTokenEstimate(unittest.TestCase):
-    def test_the_cost_model_matches_the_thumbnail_we_actually_send(self):
-        # the estimate assumes a 768px thumbnail; assert the constant agrees
-        from lupa.caption import INPUT_TOKENS_PER_IMAGE
+    """What downscaling buys, and what it does not.
+
+    This used to assert INPUT_TOKENS_PER_IMAGE <= 800 "because we send a 768px
+    thumbnail", on the belief — taken from the tiling rule in Google's docs —
+    that a 768px image is one 258-token tile. Measured with countTokens on
+    2026-08-20 against gemini-3.5-flash-lite, the same photograph costs 1080
+    tokens at 1536px, at 768px, at 384px and at 256px alike: the image part is
+    a flat charge, and pixels do not move it.
+
+    So the 768px cap is still right — it keeps a 30MB upload from crossing the
+    wire on every image — but it is a bandwidth measure, not a token measure,
+    and the input budget must be sized from the flat charge instead of from it.
+    """
+
+    def test_the_upload_is_still_capped(self):
         self.assertEqual(MAX_EDGE_PX, 768)
-        self.assertLessEqual(INPUT_TOKENS_PER_IMAGE, 800)
+
+    def test_the_input_budget_is_sized_for_a_flat_image_charge(self):
+        from lupa.caption import INPUT_TOKENS_PER_IMAGE
+        # 333 prompt + ~1080 image, measured. A budget under a thousand tokens
+        # could only have come from believing pixels are what is charged.
+        self.assertGreater(INPUT_TOKENS_PER_IMAGE, 1000)
 
 
 if __name__ == "__main__":

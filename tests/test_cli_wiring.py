@@ -500,3 +500,130 @@ class TestSearchAcceptsTheTextFilter(unittest.TestCase):
 
     def test_nothing_is_filtered_when_the_flag_is_absent(self):
         self.assertNotIn("has_text", self.search(["search", "banner"]))
+
+
+class TestTheScreenClosesTheCycle(unittest.TestCase):
+    """The run prints an estimate before spending; it must come back and say
+    whether the estimate was right.
+
+    Until now the user saw "estimated cost: under US$ 0.01" and never learned
+    what the API had actually counted — which is exactly why the token budgets
+    in caption.py were never confronted with the bill.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR",
+            "GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG",
+            "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN")
+
+    class FakeSource:
+        def list(self):
+            return [{"id": name, "file": f"{name}.png", "hash": name,
+                     "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+                     "url": f"https://example.invalid/{name}",
+                     "trashed": False, "size": 100}
+                    for name in ("a", "b")]
+
+        def fetch(self, file_id):
+            return b"bytes", "image/png"
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-usage-"))
+        self.collection = self.home / "photos"
+        self.collection.mkdir()
+
+        env_file = self.home / "lupa.env"
+        env_file.write_text("GEMINI_API_KEY=abc\n", encoding="utf-8")
+        os.environ["LUPA_ENV"] = str(env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+    def tearDown(self):
+        import os
+        import shutil
+
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def run_index(self, usage=(588, 103)):
+        """Runs `lupa index` with a describer that reports `usage` per image."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        def make_describer(*args, on_usage=None, **kw):
+            def describe(item, image, mime):
+                if on_usage:
+                    on_usage(usage)
+                return {"caption": "ok", "tags": ["t"]}
+            return describe
+
+        source = self.FakeSource()
+        originals = cli.build_source, cli.make_describer
+        cli.build_source = lambda *a, **k: (source, None)
+        cli.make_describer = make_describer
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["index", str(self.collection), "--yes", "--no-push",
+                              "--no-batch", "--no-contact-sheets"])
+                except SystemExit as stop:
+                    code = stop.code if isinstance(stop.code, int) else 1
+        finally:
+            cli.build_source, cli.make_describer = originals
+        return code, printed.getvalue()
+
+    def index_dir(self):
+        return self.home / "indexes" / "photos"
+
+    def test_the_screen_reports_the_tokens_the_api_counted(self):
+        code, printed = self.run_index()
+        self.assertEqual(0, code)
+        self.assertIn("1176", printed)   # 2 images × 588 input
+        self.assertIn("206", printed)    # 2 images × 103 output
+
+    def test_the_screen_puts_the_budget_next_to_the_measurement(self):
+        _, printed = self.run_index()
+        from lupa.caption import INPUT_TOKENS_PER_IMAGE
+        self.assertIn(str(INPUT_TOKENS_PER_IMAGE), printed)
+        self.assertIn("1600", printed)   # the measured budget, spelled out
+        self.assertIn("588", printed)    # what was really counted, per image
+
+    def test_the_screen_compares_the_estimate_with_the_money_counted(self):
+        _, printed = self.run_index()
+        lowered = printed.lower()
+        self.assertIn("estimated", lowered)
+        self.assertIn("counted", lowered)
+
+    def test_a_model_that_reports_nothing_does_not_print_a_free_run(self):
+        _, printed = self.run_index(usage=None)
+        self.assertIn("unknown", printed.lower())
+
+    def test_a_run_that_measured_nothing_still_exits_zero(self):
+        code, _ = self.run_index(usage=None)
+        self.assertEqual(0, code)
+
+    def test_the_measurement_survives_on_disk_in_the_run_report(self):
+        self.run_index()
+        reports = list((self.index_dir() / "runs").glob("*.md"))
+        self.assertTrue(reports, "no run report was written")
+        self.assertIn("1176", reports[0].read_text(encoding="utf-8"))
+
+    def test_the_measurement_is_the_last_word_of_the_run(self):
+        """It closes the cycle, so it closes the output. A bookkeeping line
+        printed after it would bury the one number the user came back for."""
+        _, printed = self.run_index()
+        lines = [line for line in printed.splitlines() if line.strip()]
+        counted = max(i for i, line in enumerate(lines) if "counted" in line.lower())
+        saved = max(i for i, line in enumerate(lines) if "saved as" in line)
+        self.assertGreater(counted, saved)

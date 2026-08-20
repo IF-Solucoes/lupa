@@ -20,6 +20,7 @@ collection, and a mismatch refuses the resume instead of corrupting the index.
 """
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -44,9 +45,34 @@ def fingerprint(ids):
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-def remember(index_dir, batch_name, collection, model, ids):
-    """Writes the receipt. Called the instant create_batch returns, never later."""
+def _to_stderr(line):
+    print(line, file=sys.stderr, flush=True)
+
+
+def remember(index_dir, batch_name, collection, model, ids, on_warning=None):
+    """Writes the receipt. Called the instant create_batch returns, never later.
+
+    One run submits one batch, so a receipt already on disk naming a DIFFERENT
+    batch means a second batch was created while the first was in flight — which
+    only happens when something submitted twice. That first batch is paid for and
+    this write is about to erase its only name, so the name is said out loud
+    before it goes. Not fatal: the new batch is paid for too, and dying here
+    would abandon both.
+
+    on_warning — where that line goes. Defaults to stderr, so the warning
+    survives a caller that never thought about it.
+    """
     ids = list(ids)
+    previous = read(index_dir)
+    if previous and str(previous.get("batch")) != str(batch_name):
+        lost = previous.get("batch")
+        say = on_warning or _to_stderr
+        say(f"  !! {record_path(index_dir)} already held a receipt for another "
+            f"batch: {lost}")
+        say(f"  !! it is being overwritten by {batch_name}, which leaves {lost} "
+            f"paid for and with no receipt")
+        say(f"  !! one run must create one batch — write {lost} down now, this "
+            f"line is the only copy left")
     payload = {
         "v": RECORD_VERSION,
         "batch": str(batch_name),

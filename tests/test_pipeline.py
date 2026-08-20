@@ -355,3 +355,53 @@ class TestFailuresAreNotSuccess(PipelineTestCase):
         source = FakeSource([a_file("a", "1")])
         result = self.execute(source, mode="index", describe=self.always_fails())
         self.assertNotIn("1 images", result["verdict"])
+
+
+class TestTheRunAccountsForItsTokens(PipelineTestCase):
+    """The meter is filled by the describer and has to survive to the report.
+
+    Injected, like source and describe: the pipeline must stay network-free and
+    the accounting must still be verifiable without credentials.
+    """
+
+    def meter(self, *usages):
+        from lupa.caption import UsageMeter
+        instrument = UsageMeter()
+        for usage in usages:
+            instrument.record(usage)
+        return instrument
+
+    def report(self):
+        return list((self.dir / "runs").glob("*.md"))[0].read_text(encoding="utf-8")
+
+    def test_the_meter_comes_back_in_the_result(self):
+        instrument = self.meter((588, 103))
+        result = self.execute(FakeSource([a_file("a", "1")]), mode="index",
+                              usage=instrument)
+        self.assertIs(result["usage"], instrument)
+
+    def test_what_the_meter_counted_reaches_the_run_report(self):
+        self.execute(FakeSource([a_file("a", "1")]), mode="index",
+                     usage=self.meter((588, 103)))
+        text = self.report()
+        self.assertIn("588", text)
+        self.assertIn("103", text)
+
+    def test_a_describer_that_reports_usage_fills_the_meter_through_the_run(self):
+        from lupa.caption import UsageMeter
+
+        instrument = UsageMeter()
+
+        def describe(item, image, mime):
+            instrument.record((588, 103))
+            return {"caption": "ok", "tags": ["t"]}
+
+        self.execute(FakeSource([a_file("a", "1"), a_file("b", "2")]), mode="index",
+                     describe=describe, usage=instrument)
+        self.assertEqual(instrument.input_tokens, 1176)
+        self.assertIn("1176", self.report())
+
+    def test_a_run_without_a_meter_is_still_a_run(self):
+        result = self.execute(FakeSource([a_file("a", "1")]), mode="index")
+        self.assertTrue(result["written"])
+        self.assertIsNone(result.get("usage"))

@@ -104,7 +104,7 @@ Cowork and Code both install this as a plugin, from the same repository.
 **In Claude Cowork:** Customize → Plugins → **Add marketplace** → `IF-Solucoes/lupa`,
 then install it from the list.
 
-Either way you get the three skills and the MCP server (`lupa_search`,
+Either way you get both skills and the MCP server (`lupa_search`,
 `lupa_status`), which the client starts on its own. The server has no dependencies
 beyond the Python standard library.
 
@@ -115,17 +115,16 @@ an offline install, or when a marketplace refresh misbehaves. Download
 [`dist/lupa.zip`](dist/lupa.zip) and upload it. Rebuild it after changing the
 plugin with `python3 scripts/build_plugin_package.py`.
 
-### Which face runs where
+### Where the skills run
 
-| | Claude Code | Cowork / claude.ai |
+| skill | what it does | where |
 |---|---|---|
-| `lupa-index` | indexes collections | — indexing needs local execution |
-| `lupa-search` | queries through the MCP | — |
-| `lupa-cowork` | — | reads the `_lupa/` index through the Drive connector |
+| `lupa-index` | builds and updates the index | Claude Code |
+| `lupa-search` | queries it through the MCP | Claude Code |
 
-Indexing lives in Code because it downloads images, calls Gemini and writes files.
-Cowork reads the index that Code produced, which is the whole point of keeping the
-index as plain files inside the collection.
+Both need local execution: indexing downloads images, calls Gemini and writes
+files, and search reads a SQLite projection on disk. No skill ships for a surface
+without code execution.
 
 ### From source
 
@@ -176,7 +175,7 @@ Preflight · collection "if-editorial"
 Plan for this run
   +40 added · ~3 changed · -5 removed · =3364 unchanged
   images to describe: 43
-  estimated cost: under US$ 0.01
+  estimated cost: US$ 0.03
 ```
 
 On a `✗` it stops and spends nothing. Otherwise it shows the plan and asks before
@@ -207,7 +206,7 @@ was always empty. It is no longer written.
 |---|---|
 | `--dry-run` | stop after the plan, spend nothing |
 | `--retry-failed` | describe again the images that failed in earlier runs |
-| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice |
+| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice. The run that lost it prints the whole command to paste, target included |
 | `--no-recursive` | index only the top level |
 | `--no-batch` | one call per image, immediate but twice the price |
 | `--workers N` | parallel describe calls when batch is off (default 8) |
@@ -253,15 +252,16 @@ nothing else:
 A printed mockup is `design` + `physical`. A clean photo ready to receive type is
 `photo` + `has_text: false`.
 
-## Two faces
+## The index reads without lupa
 
 - **Claude Code** — the plugin ships an MCP server (`lupa_search`, `lupa_status`)
-  that starts automatically. Indexing happens here.
-- **Cowork, claude.ai, any agent with the Drive connector** — reads the `_lupa/`
-  files directly. It executes nothing, and needs nothing. The `lupa-cowork` skill
-  teaches the path: `INDEX.md` → `by-tag/` → candidates.
+  that starts automatically. Indexing and search happen here.
+- **Any agent holding the Drive connector** — can read the `_lupa/` files directly:
+  `INDEX.md` → `by-tag/` → candidates. It executes nothing and needs nothing. No
+  skill ships to teach that path; it is a property of the format, and `INDEX.md`
+  opens with the instructions for reading it.
 
-The contract between the faces is the files. Neither knows the other exists.
+The contract is the files, and lupa is not on the other end of it.
 
 ## Configuration
 
@@ -306,8 +306,11 @@ registers the collection for you.
 ## Cost
 
 Describing a thousand images in batch with Flash-Lite lands in the range of
-**cents**. The arithmetic lives in `lupa/caption.py` and shows up in every
-`--dry-run` before you spend.
+**cents** — US$ 0.58 at the moment, on the default model. The arithmetic lives in
+`lupa/caption.py` and shows up in every `--dry-run` before you spend. Its two
+token budgets are not guesses: they were measured on 2026-08-20 against a real
+run, and `lupa/caption.py` records how, so the estimate can be checked instead of
+believed.
 
 Above 200 new images, the command asks first.
 

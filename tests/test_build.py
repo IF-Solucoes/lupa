@@ -145,3 +145,54 @@ class TestBackup(IndexTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheRunReportRecordsTheTokens(IndexTestCase):
+    """The run report is where a measurement survives the terminal scrollback."""
+
+    def meter(self, *usages):
+        from lupa.caption import UsageMeter
+        instrument = UsageMeter()
+        for usage in usages:
+            instrument.record(usage)
+        return instrument
+
+    def report(self):
+        return list((self.dir / "runs").glob("*.md"))[0].read_text(encoding="utf-8")
+
+    def test_a_caller_that_measures_nothing_still_gets_a_report(self):
+        self.write()
+        self.assertIn("+2 added", self.report())
+
+    def test_the_tokens_the_api_counted_are_written_down(self):
+        self.write(usage=self.meter((588, 103), (600, 120)))
+        text = self.report()
+        self.assertIn("1188", text)
+        self.assertIn("223", text)
+
+    def test_the_report_puts_the_budget_next_to_the_measurement(self):
+        self.write(usage=self.meter((589, 103)))
+        text = self.report()
+        # the constant itself, not a literal that happens to be a substring of it
+        from lupa.caption import INPUT_TOKENS_PER_IMAGE
+        self.assertIn(str(INPUT_TOKENS_PER_IMAGE), text)
+        self.assertIn("1600", text)
+        self.assertIn("589", text)
+
+    def test_a_run_that_measured_nothing_says_unknown_in_the_report(self):
+        self.write(usage=self.meter(None, None))
+        self.assertIn("unknown", self.report().lower())
+
+    def test_the_report_prices_a_synchronous_run_at_full_price(self):
+        """Batch halves the bill. A report that always assumes batch halves a
+        bill that was never halved — and the whole point here is to stop
+        guessing about money.
+
+        The harness writes with gemini-2.5-flash-lite: US$ 0.10 in, US$ 0.40 out
+        per 1M tokens, so a million of each is US$ 0.50 undivided."""
+        self.write(usage=self.meter((1_000_000, 1_000_000)), batch=False)
+        self.assertIn("0.50", self.report())
+
+    def test_the_report_still_halves_a_batch_run(self):
+        self.write(usage=self.meter((1_000_000, 1_000_000)), batch=True)
+        self.assertIn("0.25", self.report())

@@ -162,12 +162,16 @@ def _describe_many(source, describe, index_dir, raw_by_id, ids, workers):
 
 def run(collection, index_dir, source, describe, mode="update", now="",
         dry_run=False, rebuild=False, confirm=None, batch=True,
-        model=gemini.DEFAULT_MODEL, contact_sheets=True, workers=1):
+        model=gemini.DEFAULT_MODEL, contact_sheets=True, workers=1, usage=None):
     """Executes one full run.
 
     source   — object exposing .list() and .fetch(file_id) -> (bytes, mime)
     describe — callable(item, bytes, mime) -> dict from the vision model
     mode     — "index" (first time) or "update" (incremental)
+    usage    — optional caption.UsageMeter that `describe` fills as it spends.
+               Injected like everything else that touches the network, so the
+               accounting is verifiable here without credentials; the pipeline
+               only carries it to the run report and back to the caller.
     """
     index_dir = Path(index_dir)
 
@@ -182,7 +186,8 @@ def run(collection, index_dir, source, describe, mode="update", now="",
 
     if dry_run:
         return {"plan": plan, "estimated_cost": cost, "failures": [],
-                "written": False, "summary": plan.summary(), "verdict": None}
+                "written": False, "summary": plan.summary(), "verdict": None,
+                "usage": usage}
 
     if rebuild:
         backup(index_dir, now=now)
@@ -214,7 +219,7 @@ def run(collection, index_dir, source, describe, mode="update", now="",
 
         new_manifest = write_index(
             index_dir, collection=collection, items=items, summary=summary,
-            model=model, cost_usd=cost, now=now)
+            model=model, cost_usd=cost, now=now, usage=usage, batch=batch)
 
         report = None
         if failures:
@@ -225,5 +230,5 @@ def run(collection, index_dir, source, describe, mode="update", now="",
 
     return {"plan": plan, "estimated_cost": cost, "failures": failures,
             "written": True, "manifest": new_manifest, "total": len(items),
-            "contact_sheets": sheets, "summary": summary,
+            "contact_sheets": sheets, "summary": summary, "usage": usage,
             "verdict": verdict(failures, len(pending), report)}

@@ -1,4 +1,4 @@
-"""The uploadable package: Cowork also accepts a plugin as a file."""
+"""The uploadable package: Cowork's Plugins page also accepts a plugin as a file."""
 import os
 import subprocess
 import sys
@@ -29,9 +29,24 @@ class TestPluginPackage(unittest.TestCase):
     def test_it_carries_the_manifest_where_the_runtime_looks(self):
         self.assertIn("lupa/.claude-plugin/plugin.json", self.names)
 
-    def test_it_carries_every_skill(self):
-        for skill in ("index", "search", "cowork"):
-            self.assertIn(f"lupa/skills/{skill}/SKILL.md", self.names)
+    def test_it_carries_exactly_the_skills_the_repository_declares(self):
+        """Asked of the `skills/` tree, never of a list copied into this file.
+
+        A hardcoded list only polices the direction it was written for: it
+        catches a skill that stopped being packaged, and says nothing when a
+        skill is deleted from the repository — the assertion simply keeps
+        naming a folder nobody ships any more. Both directions are compared
+        here, so adding or retiring a skill needs no edit in this file and
+        cannot silently disagree with what the package carries.
+        """
+        declared = {path.parent.name
+                    for path in (REPO / "skills").glob("*/SKILL.md")}
+        packaged = {name.split("/")[2]
+                    for name in self.names
+                    if name.startswith("lupa/skills/") and name.endswith("/SKILL.md")}
+        self.assertEqual(packaged, declared)
+        self.assertIn("index", declared)      # the two the plugin is built around
+        self.assertIn("search", declared)
 
     def test_it_carries_the_mcp_declaration_and_its_server(self):
         self.assertIn("lupa/.mcp.json", self.names)
@@ -54,6 +69,33 @@ class TestPluginPackage(unittest.TestCase):
         import json
         manifest = json.loads(self.archive.read("lupa/.claude-plugin/plugin.json"))
         self.assertEqual(manifest["name"], "lupa")
+
+
+class TestTheCommittedArtefactIsNotStale(unittest.TestCase):
+    """`dist/lupa.zip` is versioned on purpose, and nothing rebuilt it for you.
+
+    The build itself always agrees with the repository — it sweeps `skills/`.
+    The committed zip does not: it is whatever the last person to run the script
+    produced. Retire a skill without rebuilding and the release keeps handing
+    Cowork a plugin containing a skill this repository no longer has. Names are
+    compared, not bytes, so a rebuild on another machine is not a failure.
+    """
+
+    ARTEFACT = REPO / "dist" / "lupa.zip"
+
+    def test_it_ships_exactly_the_skills_the_repository_declares(self):
+        if not self.ARTEFACT.exists():
+            self.skipTest("no release artefact committed")
+        declared = {path.parent.name
+                    for path in (REPO / "skills").glob("*/SKILL.md")}
+        with zipfile.ZipFile(self.ARTEFACT) as archive:
+            shipped = {name.split("/")[2]
+                       for name in archive.namelist()
+                       if name.startswith("lupa/skills/")
+                       and name.endswith("/SKILL.md")}
+        self.assertEqual(shipped, declared,
+                         "dist/lupa.zip disagrees with skills/ — rebuild it with "
+                         "python scripts/build_plugin_package.py")
 
 
 class TestBuildScriptOnACp1252Console(unittest.TestCase):

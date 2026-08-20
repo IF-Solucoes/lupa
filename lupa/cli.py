@@ -15,10 +15,13 @@ spending.
 import argparse
 import os
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from lupa import caption, config, gemini, inflight
+from lupa.build import writing_atomically
 from lupa.guards import IndexAlreadyExists, LockBusy, needs_cost_confirmation
 from lupa.mcp import Server
 from lupa.pipeline import run as run_pipeline
@@ -40,6 +43,83 @@ def resolve_entry(entry, registry):
     return resolve_target(entry)
 
 
+def shell_quote(value):
+    """Quotes an argument so the printed command survives a copy and a paste.
+
+    On Windows the target is a path, and a path has a space in it more often
+    than not: unquoted, C:\\Users\\me\\Minhas Fotos reaches argparse as two
+    arguments and the command dies on the second one.
+    """
+    text = str(value)
+    if text and not any(character.isspace() for character in text):
+        return text
+    return '"' + text.replace('"', '\\"') + '"'
+
+
+def resume_command(target_as_typed, collection=""):
+    """The line to paste to collect a batch that has already been paid for.
+
+    It names the target the person actually typed — the one that resolved a
+    moment ago, in this very run — and not the collection name on its own.
+
+    The distinction is the whole point. A collection reaches the registry at the
+    END of a run that finished (`config.register_collection`, last thing in
+    command_index), and the run that has to be rescued is by definition the run
+    that did not finish: it was killed, or the terminal was closed, while it
+    waited on a batch already charged. Reproduced live with a real paid batch —
+    the run printed `lupa update lote-prova --resume-batch`, and that command
+    answered `I could not make sense of "lote-prova"`. The instruction that
+    exists to recover money sent the user into a dead end.
+
+    command_index now also registers the collection before it spends, so the
+    short name resolves too; this stays as it is anyway, because it does not
+    depend on a write to disk having worked.
+    """
+    typed = str(target_as_typed or "").strip() or str(collection or "").strip()
+    if not typed:
+        return None
+    return f"lupa update {shell_quote(typed)} --resume-batch"
+
+
+class LocksByKey:
+    """One lock per key, alive only for as long as somebody is holding it.
+
+    Two subtleties, both of which bite:
+
+    Creating the lock must itself be atomic. `locks.setdefault(key, Lock())`
+    reads as safe but builds a Lock on every call and, worse, a plain
+    `if key not in locks` check lets two threads install two different locks for
+    the same key — a lock that protects nothing, which is the bug it was added
+    to prevent.
+
+    The table must not grow with the collection. An acervo of thousands of
+    images would otherwise leave one dead Lock per image in memory for the whole
+    run. Refcounting the entry and dropping it on the way out bounds the table
+    by the number of fetches IN FLIGHT (at most --workers), not by the number of
+    images ever fetched.
+    """
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._held = {}
+
+    @contextmanager
+    def __call__(self, key):
+        with self._guard:
+            entry = self._held.get(key)
+            if entry is None:
+                entry = self._held[key] = [threading.Lock(), 0]
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._guard:
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    self._held.pop(key, None)
+
+
 def build_source(target, env, cache, recursive=True):
     """Returns (source, service). The service exists only for Drive targets."""
     if target.kind == "local":
@@ -56,6 +136,11 @@ def build_source(target, env, cache, recursive=True):
     class DriveSource:
         def __init__(self):
             self.thumbnails = {}
+            # In batch mode the same file_id arrives here from two concurrent
+            # paths — the pipeline worker (which wants the thumbnail) and the
+            # batch assembly loop. Without this lock both find the cache empty
+            # and both download the same bytes.
+            self.downloading = LocksByKey()
 
         def list(self):
             items = list_images(service, target.folder_id, recursive=recursive)
@@ -75,27 +160,41 @@ def build_source(target, env, cache, recursive=True):
                     pass
 
             local = Path(cache) / file_id
-            if not local.exists():
-                download(service, file_id, local)
-            data = local.read_bytes()
+            with self.downloading(file_id):
+                if not local.exists():
+                    # Downloaded to <file_id>.part and renamed into place. The
+                    # rename is atomic, so `local` is either absent or whole and
+                    # no thread can ever read a file that is still arriving —
+                    # reading one meant a TRUNCATED image going to the model,
+                    # being paid for, and landing in the index looking exactly
+                    # like a legitimate description. A transfer that dies takes
+                    # its .part with it instead of poisoning the cache.
+                    with writing_atomically(local, suffix=".part") as partial:
+                        download(service, file_id, partial)
+                data = local.read_bytes()
             mime = mime_of(data, file_id)
             return downscale(data, mime), mime
 
     return DriveSource(), service
 
 
-def make_describer(api_key, model, language):
-    """One call per image, immediate. Used when batch mode is off or unavailable."""
+def make_describer(api_key, model, language, on_usage=None):
+    """One call per image, immediate. Used when batch mode is off or unavailable.
+
+    on_usage — where the token counts the API reports are handed off, one call per
+    answer. Optional so nothing that only wants descriptions has to know about it.
+    """
     def describe(item, image, mime):
         from lupa.classify import classify
         meta = {**item, **classify(item)}
         prompt = caption.build_prompt(meta, language=language)
-        return gemini.describe(api_key, prompt, image, mime, model)
+        return gemini.describe(api_key, prompt, image, mime, model, on_usage=on_usage)
     return describe
 
 
 def make_batch_describer(api_key, model, language, source, ids, on_progress=print,
-                         index_dir=None, collection="", resume_batch=None):
+                         index_dir=None, collection="", resume_batch=None,
+                         on_usage=None, target_as_typed=None):
     """Half the price: every image goes up in one job, answers come back keyed.
 
     The batch is submitted on the first call and then served from memory, so the
@@ -103,16 +202,27 @@ def make_batch_describer(api_key, model, language, source, ids, on_progress=prin
 
     resume_batch — the name of a batch already submitted and already charged. Given
     one, nothing is uploaded and nothing is created: the job is only waited on.
+
+    on_usage — the token counts, one call per item in the results file. A resumed
+    batch reports too: the answers being already paid for does not make them free
+    to measure, and the numbers are in the file either way.
+
+    target_as_typed — what the user wrote on the command line. It is what the
+    timeout message tells them to type again, because it is the one form that is
+    certain to resolve: it just did. See resume_command.
     """
     from lupa.classify import classify
 
-    state = {"results": None}
-    hint = f"lupa update {collection} --resume-batch" if collection else None
+    state = {"results": None, "error": None}
+    hint = resume_command(target_as_typed, collection)
+    # One run, one batch. The pipeline calls describe() from a pool of --workers
+    # threads (8 by default) and every one of them arrives here before the first
+    # has an answer to store, so a guard that only reads a flag lets all eight
+    # build and PAY FOR their own batch — and each one re-downloads every image
+    # to do it. This lock is what makes the submission happen once.
+    gate = threading.Lock()
 
-    def ensure_submitted(items_by_id):
-        if state["results"] is not None:
-            return
-
+    def _submit(items_by_id):
         job = resume_batch
         if job:
             on_progress(f"  resuming batch {job} — already paid for, "
@@ -135,7 +245,8 @@ def make_batch_describer(api_key, model, language, source, ids, on_progress=prin
             on_progress(f"  batch {job} accepted; waiting (this is the half-price path)")
             if index_dir is not None:
                 try:
-                    inflight.remember(index_dir, job, collection, model, ids)
+                    inflight.remember(index_dir, job, collection, model, ids,
+                                      on_warning=on_progress)
                 except Exception as failure:   # full disk, read-only folder, I/O
                     # The money is already spent, and waiting is the only way to
                     # collect it. Dying over bookkeeping would throw that away, so
@@ -150,17 +261,56 @@ def make_batch_describer(api_key, model, language, source, ids, on_progress=prin
         try:
             raw = gemini.await_batch(api_key, job, resume_hint=hint,
                                      on_update=lambda s: on_progress(f"    {s}"))
-        except gemini.BatchTimeout:
+        except gemini.BatchTimeout as timed_out:
+            # Said here, whole, before anything downstream can trim it. The
+            # pipeline files a timeout as one failed image among others and the
+            # run report flattens every error to 200 characters — which cut the
+            # batch name in half ("batches/xyz-7…") and dropped the resume
+            # command off the end altogether. That command and that name are the
+            # only way back to money already spent; the last place they may
+            # appear is a file nobody reads while the screen says FAILED.
+            on_progress("")
+            for line in str(timed_out).splitlines():
+                on_progress(f"  {line}")
             raise                       # still running, still resumable: keep the record
         except gemini.GeminiError:
             if index_dir is not None:   # ended badly: there is nothing left to resume
                 inflight.forget(index_dir)
             raise
 
-        state["results"] = gemini.read_batch_results(raw)
+        state["results"] = gemini.read_batch_results(raw, on_usage=on_usage)
         if index_dir is not None:
             inflight.forget(index_dir)  # consumed: it must not be resumable again
         on_progress(f"  batch returned {len(state['results'])} descriptions")
+
+    def ensure_submitted(items_by_id):
+        """Double-checked: the flag is read outside the lock, so once the answers
+        are in memory the other workers never queue at all.
+
+        The lock is held across the whole of _submit — assembly, create_batch AND
+        await_batch — not just around the create call. Everything in there is one
+        indivisible purchase: a thread that took the lock only for the creation
+        would still be building its own set of lines, re-fetching every image, and
+        would still find results empty when it came back. Holding it through the
+        long wait costs nothing real either: the other workers have no work until
+        the answers exist, so they would be blocked on the same thing anyway. A
+        second of dumb waiting is cheaper than a second batch.
+        """
+        if state["results"] is not None:
+            return
+        with gate:
+            if state["results"] is not None:
+                return
+            # A submission that failed stays failed for everyone. Retrying under
+            # the lock would create a second batch out of the first one's timeout
+            # — the exact bill this lock exists to prevent.
+            if state["error"] is not None:
+                raise state["error"]
+            try:
+                _submit(items_by_id)
+            except BaseException as failure:
+                state["error"] = failure
+                raise
 
     def describe(item, image, mime):
         ensure_submitted(describe.items_by_id)
@@ -188,12 +338,16 @@ def _settle_inflight_batch(args, index_dir, collection, model, plan):
     resume it, or delete the receipt and give it up on purpose.
     """
     record = inflight.read(index_dir)
+    # Every way out of here is printed as a command to paste, so it names the
+    # target the user just typed rather than the collection name: the run whose
+    # batch is in flight is a run that died before registering anything.
+    resume = resume_command(getattr(args, "target", None), collection)
 
     if getattr(args, "dry_run", False):
         if record:
             print(f"  note: {inflight.describe(record)} is registered as in flight "
                   f"for this collection — it was already charged.")
-            print(f"  collect it with:  lupa update {collection} --resume-batch\n")
+            print(f"  collect it with:  {resume}\n")
         return None
 
     if args.resume_batch and args.no_batch:
@@ -207,7 +361,7 @@ def _settle_inflight_batch(args, index_dir, collection, model, plan):
                 f"and it was ALREADY CHARGED.\n"
                 f"  {inflight.describe(record)}\n"
                 f"  Running now would submit — and pay for — a second one.\n\n"
-                f"  Collect it:            lupa update {collection} --resume-batch\n"
+                f"  Collect it:            {resume}\n"
                 f"  Or give it up (the money stays spent, the images get paid for "
                 f"again):\n"
                 f"      delete {inflight.record_path(index_dir)}\n")
@@ -217,6 +371,65 @@ def _settle_inflight_batch(args, index_dir, collection, model, plan):
         return inflight.load_for_resume(index_dir, collection, model, plan.to_describe)
     except inflight.BatchDrift as error:
         sys.exit(f"\n✋ {error}\n")
+
+
+def _nothing_found(target, recursive=True):
+    """What a FIRST run with an empty plan actually means, said out loud.
+
+    An empty plan reads two completely different ways depending on whether an
+    index already exists, and until now both got the same line — "Nothing changed
+    since the last run" — including on a collection that had never had a run.
+
+    The silent case is the expensive one. Drive answers `files.list` for a folder
+    the account is not allowed to see with an empty list, not with an error: point
+    lupa at a client folder nobody shared with you and it looked, character for
+    character, like a successful incremental no-op. Same for the wrong subfolder.
+    """
+    from lupa.local_source import EXTENSIONS
+
+    if target.kind == "drive":
+        subfolder = ("the right folder, wrong level — the images live in a "
+                     "subfolder and the walk was told not to descend "
+                     "(--no-recursive)"
+                     if not recursive else
+                     "the right folder, wrong level — this is a subfolder that "
+                     "holds nothing itself, or a folder whose images are all in "
+                     "Drive's trash")
+        causes = [
+            "the wrong folder — the URL points at another folder, or at a "
+            "shortcut rather than the folder itself",
+            subfolder,
+            "no permission to read it — Drive answers a listing you are not "
+            "allowed to see with an EMPTY LIST, never with an error, so a folder "
+            "that was never shared with this account looks exactly like this",
+            "the folder really has nothing to describe — only files whose type "
+            "is a supported image get listed, so documents, videos and Google "
+            "Docs stay invisible even when the folder looks full",
+        ]
+    else:
+        formats = " · ".join(sorted(extension.lstrip(".") for extension in EXTENSIONS))
+        causes = [
+            "the wrong folder — the path points somewhere else",
+            "the right folder, wrong level — the images live in a subfolder"
+            + ("" if recursive else ", and --no-recursive was passed"),
+            "no permission to read it, or a Google Drive folder mounted on disk "
+            "that has not synced this folder yet — either way the listing comes "
+            "back empty instead of failing",
+            f"the folder really has no image in a supported format ({formats})",
+        ]
+
+    lines = [
+        "✋ Nothing found to index — this is NOT a success.",
+        "",
+        f'  This is the first run for "{target.name}", and the collection came '
+        f"back with no image at all.",
+        "  Nothing was indexed, nothing was described, nothing was spent.",
+        "",
+        "  What causes this, most common first:",
+    ]
+    lines += [f"    · {cause}" for cause in causes]
+    lines += ["", "  Check what the folder actually contains, then run again.", ""]
+    return "\n".join(lines)
 
 
 def command_index(args):
@@ -283,13 +496,42 @@ def command_index(args):
     print(f"  estimated cost: {caption.format_cost(preview['estimated_cost'])}")
     print()
 
+    # Registered here, before a cent is spent, and not only at the end of a run
+    # that finished. A run that dies waiting on a batch already charged is the
+    # one run whose name has to resolve afterwards — and the registration at the
+    # bottom of this function is exactly the line it never reaches. An entry
+    # whose index does not exist yet costs nothing: only resolve_entry and
+    # `lupa forget` read the registry, so the worst case is that a name resolves
+    # to a collection with nothing indexed in it, which is what the next run
+    # would build anyway. --dry-run is excluded because it promises to write
+    # nothing.
+    if not args.dry_run:
+        registry = config.register_collection(registry, target)
+        config.write_config(registry, file_env=env)
+
     # Before anything this run might spend: money it may have spent already.
     model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
     resume_batch = _settle_inflight_batch(args, index_dir, target.name, model, plan)
 
     if plan.empty:
-        print("Nothing changed since the last run. Nothing to do, nothing to pay.\n")
-        return
+        # Two different events wore the same sentence. With an index on disk an
+        # empty plan is the incremental working — the promise of the tool. Without
+        # one, nothing was found at all, and saying "since the last run" about a
+        # run that never happened is how a folder nobody had permission to read
+        # got reported as a successful indexing.
+        if index_exists:
+            print("Nothing changed since the last run. "
+                  "Nothing to do, nothing to pay.\n")
+            return
+
+        print(_nothing_found(target, recursive=not args.no_recursive))
+        # --dry-run keeps its 0: it inspected, and it never claimed to have done
+        # anything. A real run must not, because the exit code is the only part
+        # of this a script — or an agent following the skill — actually reads.
+        if args.dry_run:
+            print("(--dry-run: stopping here, nothing was written)\n")
+            return
+        raise SystemExit(1)
 
     if args.dry_run:
         print("(--dry-run: stopping here, nothing was written)\n")
@@ -311,22 +553,30 @@ def command_index(args):
     # waiting, and describing again would pay full price for the same images.
     batch_mode = bool(resume_batch) or (use_batch and not args.no_batch)
 
+    # One meter for the whole run, filled by whichever describer ends up spending.
+    # It exists so the estimate printed above can be checked against the bill
+    # instead of being taken on faith, as it has been until now.
+    meter = caption.UsageMeter()
+
     if batch_mode:
         remote = {item["id"]: item for item in source.list()}
         describer = make_batch_describer(api_key, model, language, source,
                                          plan.to_describe, index_dir=index_dir,
                                          collection=target.name,
-                                         resume_batch=resume_batch)
+                                         resume_batch=resume_batch,
+                                         on_usage=meter.record,
+                                         target_as_typed=args.target)
         describer.items_by_id = remote
     else:
-        describer = make_describer(api_key, model, language)
+        describer = make_describer(api_key, model, language, on_usage=meter.record)
 
     result = run_pipeline(
         collection=target.name, index_dir=index_dir, source=source,
         describe=describer, batch=batch_mode,
         mode="index" if args.rebuild else "update", now=utc_stamp(),
         rebuild=args.rebuild, confirm=args.confirm, model=model,
-        contact_sheets=not args.no_contact_sheets, workers=max(1, args.workers))
+        contact_sheets=not args.no_contact_sheets, workers=max(1, args.workers),
+        usage=meter)
 
     print()
     # A total failure is a headline, not a footnote: it goes before everything
@@ -345,8 +595,22 @@ def command_index(args):
     elif sheets.get("skipped"):
         print(f"  contact sheets skipped: {sheets['skipped']}")
 
+
+    # Already written before the spending started; repeated here because it is
+    # idempotent and because this is where the user is told about it.
     config.write_config(config.register_collection(registry, target), file_env=env)
     print(f'  saved as "{target.name}" — next time the name alone is enough')
+
+    # Last of everything the run says, because it is what the run came back to
+    # answer. Above this point every figure was a promise made before spending;
+    # this is the only place the API's own count is put next to it.
+    measured = caption.usage_lines(result.get("usage"),
+                                   estimated_cost=result.get("estimated_cost"),
+                                   batch=batch_mode, model=model, env=env)
+    if measured:
+        print()
+        for line in measured:
+            print(line)
 
     if service and not args.no_push:
         from lupa.publish import publish

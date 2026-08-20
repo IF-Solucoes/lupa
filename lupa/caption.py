@@ -17,16 +17,48 @@ DEFAULT_LANGUAGE = "en"
 LANGUAGE_NAMES = {"en": "English", "pt": "Brazilian Portuguese", "es": "Spanish",
                   "fr": "French", "de": "German", "it": "Italian"}
 
-INPUT_TOKENS_PER_IMAGE = 600   # 768px thumbnail plus prompt
+# --- the two budgets, and the measurement they came from ---
+#
+# MEASURED on 2026-08-20, not estimated. One real batch run of 9 images through
+# gemini-3.5-flash-lite, read off the usageMetadata the API itself returned:
+#
+#     12741 input · 1970 output tokens over 9 responses
+#     per image: 1415.7 input · 218.9 output
+#
+# The input side was then split with the free countTokens endpoint, same model,
+# same day:
+#
+#     prompt, with the kind/medium block classify() never settles ...... 333
+#     the image part .......................................... 1080 to 1107
+#
+# The image part is FLAT: the same photograph counts 1080 tokens whether it goes
+# up at 1536px, 768px, 384px or 256px. Pixels are not what is charged, so the
+# 768px cap in thumbnail.py saves upload bandwidth and not one token. Every
+# number quoted here before came from the tiling rule in Google's docs (~258
+# tokens for one 768px tile), which this model does not follow — that mistaken
+# rule is the whole of the 2.4x under-quote this replaces.
+#
+# 1600 covers the dearest request measured (333 + 1107 = 1440) with 11% to spare,
+# and the average with 13%.
+#
+# Worth re-measuring when: the model changes (the flat charge is a property of
+# the model, and 9 images of one collection is a small sample), the prompt below
+# is rewritten, or classify() starts settling kind/medium — that last one alone
+# would drop the prompt from 333 tokens to 246.
+INPUT_TOKENS_PER_IMAGE = 1600
 
-# A budget, not an average — it feeds the warning shown before spending, so it has
-# to cover the worst ordinary image rather than the typical one. Measured against
-# the 875 real responses of the first indexed collection: what the model returns
-# today is 313 chars ≈ 78 tokens once kind/medium are always asked. `has_text` adds
-# about 4, and the transcription is capped at 60 words in the prompt below, which is
-# ≈ 90 tokens of Portuguese. 78 + 4 + 90 = 172, so the 200 this repository has always
-# quoted still covers the transcription, and no price moves because of it.
-OUTPUT_TOKENS_PER_IMAGE = 200
+# Same run: 218.9 output tokens per image, against the 200 guessed here before —
+# the only one of the two that was nearly right. The margin is wider than the
+# input's on purpose, because this is the axis that actually varies. Those same 9
+# responses, re-counted through countTokens, spread from ~115 tokens for a bare
+# photograph to ~416 for a text-heavy piece being transcribed, and output is
+# priced 8x input on the default model, so text-heavy designs are where an
+# under-quote would hurt. 275 covers the measured average with 26%.
+#
+# Deliberately not sized for that 416-token worst case: a budget is multiplied by
+# every image in the collection, and quoting the dearest image 875 times over is
+# its own kind of lie.
+OUTPUT_TOKENS_PER_IMAGE = 275
 
 # Price per 1M tokens, per model — (input, output). Batch mode is exactly half on
 # both, so the halving below is a property of the mode, not of any one model.
@@ -267,3 +299,155 @@ def format_cost(value):
     if value < 0.01:
         return "under US$ 0.01"
     return f"US$ {value:.2f}"
+
+
+# --- what the API actually counted, as opposed to what we budgeted for ---
+
+class UsageMeter:
+    """Adds up the token counts the API reports, over one whole run.
+
+    The two budgets at the top of this module were written by hand and, until
+    this class existed, were never once compared with the bill. This is the
+    instrument that makes the comparison possible — it measures, and deliberately
+    changes nothing: the budgets stay exactly where they are until somebody
+    decides to move them with the numbers in hand.
+
+    Thread-safe on purpose: the synchronous path describes up to --workers images
+    at a time, and an increment lost to a race is a token nobody can ever find.
+    """
+
+    def __init__(self):
+        import threading
+
+        self._lock = threading.Lock()
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.counted = 0      # responses that carried usageMetadata
+        self.unknown = 0      # responses that did not — never counted as free
+
+    def record(self, usage):
+        """One response's (input, output), or None when it reported nothing."""
+        with self._lock:
+            if usage is None:
+                self.unknown += 1
+                return
+            inbound, outbound = usage
+            self.input_tokens += int(inbound)
+            self.output_tokens += int(outbound)
+            self.counted += 1
+
+    @property
+    def known(self):
+        return self.counted > 0
+
+    @property
+    def responses(self):
+        return self.counted + self.unknown
+
+    @property
+    def per_image(self):
+        """Average over the responses that reported. None when none did."""
+        if not self.counted:
+            return None
+        return (round(self.input_tokens / self.counted, 1),
+                round(self.output_tokens / self.counted, 1))
+
+    def cost(self, batch=True, model=None, env=None):
+        """Dollars for the tokens actually counted. None when that cannot be known.
+
+        None rather than zero, for the same reason estimate_cost returns None: a
+        number here is a claim about money, and there is nothing to claim when
+        either the price or the measurement is missing.
+        """
+        if not self.known:
+            return None
+        pricing = resolve_pricing(model, env)
+        if not pricing.known:
+            return None
+        total = (self.input_tokens / 1_000_000 * pricing.input_price
+                 + self.output_tokens / 1_000_000 * pricing.output_price)
+        return round(total * (0.5 if batch else 1.0), 6)
+
+
+def _money(value):
+    """Cost to audit, not merely to read — this is the line that checks the quote.
+
+    format_cost collapses everything below a cent into "under US$ 0.01", which is
+    right for a warning and useless for a comparison: two numbers that both read
+    "under US$ 0.01" compare to nothing.
+    """
+    if value is None:
+        return "unknown"
+    if not value:
+        return "US$ 0.00"
+    if value < 0.01:
+        return f"US$ {value:.6f}"
+    return f"US$ {value:.2f}"
+
+
+def _gap(counted, budget):
+    """How far the measurement sits from the budget, in words."""
+    if not budget:
+        return "no budget on record"
+    share = abs(counted - budget) / budget * 100
+    return f"{share:.1f}% {'over' if counted > budget else 'under'} budget"
+
+
+def usage_lines(usage, estimated_cost=None, batch=True, model=None, env=None):
+    """The lines that close the cycle: what was quoted, against what was charged.
+
+    Returned as a list so the same measurement can be printed on the screen and
+    written into the run report without either one paraphrasing the other.
+
+    An empty list means there was nothing to measure at all — no meter was wired
+    in. A meter that heard nothing is different, and says so out loud: silence
+    from the API is a fact worth reporting, never a zero.
+    """
+    if usage is None:
+        return []
+
+    if not usage.known:
+        from lupa.gemini import USAGE_FIELD      # lazy: gemini reads caption too
+
+        lines = [f"Tokens the API counted: unknown — no response carried "
+                 f"{USAGE_FIELD}"]
+        if usage.unknown:
+            lines.append(f"  {usage.unknown} responses arrived without it, so this "
+                         f"run could not be measured")
+        lines.append(f"  the estimate of {_money(estimated_cost)} therefore stands "
+                     f"unchecked against the bill")
+        return lines
+
+    inbound, outbound = usage.per_image
+    lines = [
+        f"Tokens the API counted: {usage.input_tokens} input · "
+        f"{usage.output_tokens} output, over {usage.counted} responses",
+        f"  per image: {inbound} input · {outbound} output",
+        f"  input:  {inbound} counted vs {INPUT_TOKENS_PER_IMAGE} budgeted — "
+        f"{_gap(inbound, INPUT_TOKENS_PER_IMAGE)}",
+        f"  output: {outbound} counted vs {OUTPUT_TOKENS_PER_IMAGE} budgeted — "
+        f"{_gap(outbound, OUTPUT_TOKENS_PER_IMAGE)}",
+    ]
+    if usage.unknown:
+        lines.append(f"  {usage.unknown} of {usage.responses} responses did not "
+                     f"report usage — they are not in the totals above")
+
+    actual = usage.cost(batch=batch, model=model, env=env)
+    mode = "batch, half price" if batch else "synchronous, full price"
+    lines.append(f"  estimated before spending: {_money(estimated_cost)} · "
+                 f"actually counted: {_money(actual)} ({mode})")
+
+    # Two different alarms, kept apart on purpose. A budget can be exceeded on one
+    # axis while the run still costs less than it quoted — input and output are
+    # priced an order of magnitude apart — and conflating the two would raise a
+    # false alarm about money, the exact failure this measurement exists to end.
+    breached = [name for name, counted, budget in
+                (("input", inbound, INPUT_TOKENS_PER_IMAGE),
+                 ("output", outbound, OUTPUT_TOKENS_PER_IMAGE))
+                if counted > budget]
+    if breached:
+        lines.append(f"  the {' and '.join(breached)} budget on record no longer "
+                     f"covers what the API counted per image")
+    if actual is not None and estimated_cost is not None and actual > estimated_cost:
+        lines.append("  this run cost more than it quoted before spending")
+    return lines

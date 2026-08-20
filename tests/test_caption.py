@@ -133,8 +133,11 @@ class TestCost(unittest.TestCase):
     def test_batch_costs_less_than_synchronous(self):
         self.assertLess(estimate_cost(1000, batch=True), estimate_cost(1000, batch=False))
 
-    def test_a_thousand_images_cost_cents(self):
-        self.assertLess(estimate_cost(1000, batch=True), 0.50)
+    def test_a_thousand_images_cost_under_a_dollar(self):
+        # Was "cost cents", against a 600/200 budget nobody had ever checked. At
+        # the measured budget the same thousand images quote US$ 0.58 in batch on
+        # the default model: still small, no longer a fantasy.
+        self.assertLess(estimate_cost(1000, batch=True), 1.00)
 
     def test_an_empty_collection_costs_nothing(self):
         self.assertEqual(estimate_cost(0, batch=True), 0.0)
@@ -166,10 +169,12 @@ class TestPriceTable(unittest.TestCase):
     editing a price without meaning to breaks a test instead of a bill.
     """
 
-    # cost of ONE image, synchronous, at 600 input + 200 output tokens.
+    # cost of ONE image, synchronous, at the MEASURED budget of
+    # 1600 input + 275 output tokens (see caption.py for where those came from).
     PER_IMAGE = {
-        "gemini-2.5-flash-lite": 0.00014,   # 600·$0.10/1M + 200·$0.40/1M
-        "gemini-3.5-flash-lite": 0.00068,   # 600·$0.30/1M + 200·$2.50/1M
+        "gemini-2.5-flash-lite": 0.00027,     # 1600·$0.10/1M + 275·$0.40/1M
+        # 0.0011675 exactly, as estimate_cost rounds it to six decimals
+        "gemini-3.5-flash-lite": 0.001168,    # 1600·$0.30/1M + 275·$2.50/1M
     }
 
     def test_every_model_in_the_table_has_its_cost_pinned(self):
@@ -187,12 +192,16 @@ class TestPriceTable(unittest.TestCase):
                 self.assertEqual(estimate_cost(1000, batch=True, model=model),
                                  estimate_cost(1000, batch=False, model=model) / 2)
 
-    def test_the_retired_model_still_prices_exactly_as_it_always_did(self):
-        # 0.07 batch / 0.14 synchronous per thousand: the numbers this repo shipped.
+    def test_the_retired_model_is_still_priced_from_the_same_two_numbers(self):
+        # $0.10 in / $0.40 out per 1M, unchanged and unchangeable without breaking
+        # a test. The quote per thousand moved — 0.07/0.14 before, 0.135/0.27 now —
+        # because the token BUDGET was measured, not because a price was touched.
+        # That is the whole point of keeping the two apart.
+        self.assertEqual(MODEL_PRICES["gemini-2.5-flash-lite"], (0.10, 0.40))
         self.assertEqual(estimate_cost(1000, batch=True,
-                                       model="gemini-2.5-flash-lite"), 0.07)
+                                       model="gemini-2.5-flash-lite"), 0.135)
         self.assertEqual(estimate_cost(1000, batch=False,
-                                       model="gemini-2.5-flash-lite"), 0.14)
+                                       model="gemini-2.5-flash-lite"), 0.27)
 
     def test_the_default_model_is_priced_from_the_table(self):
         pricing = resolve_pricing(DEFAULT_MODEL)
@@ -220,9 +229,10 @@ class TestPriceFromTheEnvironment(unittest.TestCase):
         pricing = resolve_pricing("gemini-9-imagined",
                                   {"LUPA_INPUT_PRICE": "0.5", "LUPA_OUTPUT_PRICE": "1.5"})
         self.assertTrue(pricing.known)
+        # 1000 × (1600 in · $0.5/1M + 275 out · $1.5/1M)
         self.assertEqual(estimate_cost(1000, batch=False, model="gemini-9-imagined",
                                        env={"LUPA_INPUT_PRICE": "0.5",
-                                            "LUPA_OUTPUT_PRICE": "1.5"}), 0.6)
+                                            "LUPA_OUTPUT_PRICE": "1.5"}), 1.2125)
 
     def test_the_origin_says_the_env_overrode_the_table(self):
         pricing = resolve_pricing("gemini-2.5-flash-lite", {"LUPA_INPUT_PRICE": "1.00"})
@@ -252,3 +262,214 @@ class TestPriceFromTheEnvironment(unittest.TestCase):
         self.assertEqual(estimate_cost(1000, model="gemini-9-imagined",
                                        env={"LUPA_INPUT_PRICE": "0",
                                             "LUPA_OUTPUT_PRICE": "0"}), 0.0)
+
+
+class TestTheMeterAddsUpWhatWasCounted(unittest.TestCase):
+    """One number per run, built from the per-response numbers the API returned.
+
+    The budgets INPUT_TOKENS_PER_IMAGE / OUTPUT_TOKENS_PER_IMAGE were never
+    checked against anything. This is the instrument that checks them.
+    """
+
+    def meter(self, *usages):
+        from lupa.caption import UsageMeter
+        instrument = UsageMeter()
+        for usage in usages:
+            instrument.record(usage)
+        return instrument
+
+    def test_it_sums_the_input_and_the_output_of_the_whole_run(self):
+        instrument = self.meter((588, 103), (600, 120))
+        self.assertEqual((instrument.input_tokens, instrument.output_tokens),
+                         (1188, 223))
+
+    def test_it_counts_how_many_responses_actually_reported(self):
+        self.assertEqual(self.meter((1, 2), (3, 4)).counted, 2)
+
+    def test_an_unreported_response_is_unknown_and_adds_nothing(self):
+        instrument = self.meter((588, 103), None)
+        self.assertEqual(instrument.unknown, 1)
+        self.assertEqual(instrument.counted, 1)
+        self.assertEqual(instrument.input_tokens, 588,
+                         "an unreported response must not be counted as a free one")
+
+    def test_a_meter_that_heard_nothing_knows_nothing(self):
+        self.assertFalse(self.meter(None, None).known)
+
+    def test_a_meter_that_heard_something_knows_it(self):
+        self.assertTrue(self.meter((1, 1)).known)
+
+    def test_it_averages_over_the_responses_that_reported(self):
+        instrument = self.meter((580, 100), (620, 106), None)
+        self.assertEqual(instrument.per_image, (600.0, 103.0))
+
+    def test_without_any_report_there_is_no_average(self):
+        self.assertIsNone(self.meter(None).per_image)
+
+    def test_the_meter_survives_being_fed_from_several_threads(self):
+        import threading
+
+        instrument = self.meter()
+        threads = [threading.Thread(target=lambda: [instrument.record((1, 1))
+                                                    for _ in range(200)])
+                   for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(instrument.input_tokens, 1600)
+
+
+class TestWhatTheseTokensReallyCost(unittest.TestCase):
+    def meter(self, *usages):
+        from lupa.caption import UsageMeter
+        instrument = UsageMeter()
+        for usage in usages:
+            instrument.record(usage)
+        return instrument
+
+    def test_the_cost_comes_from_the_counted_tokens_and_the_table(self):
+        # 1M input at US$ 0.30 and 1M output at US$ 2.50, synchronous.
+        instrument = self.meter((1_000_000, 1_000_000))
+        self.assertAlmostEqual(instrument.cost(batch=False, model=DEFAULT_MODEL), 2.80)
+
+    def test_batch_still_costs_exactly_half(self):
+        instrument = self.meter((1_000_000, 1_000_000))
+        self.assertAlmostEqual(instrument.cost(batch=True, model=DEFAULT_MODEL), 1.40)
+
+    def test_a_model_with_no_price_yields_no_number_at_all(self):
+        self.assertIsNone(self.meter((100, 100)).cost(model="gemini-does-not-exist"))
+
+    def test_a_meter_that_heard_nothing_has_no_cost_either(self):
+        self.assertIsNone(self.meter(None).cost(model=DEFAULT_MODEL))
+
+
+class TestTheBudgetMeetsTheBill(unittest.TestCase):
+    """The line that closes the cycle: what was quoted, against what was charged.
+
+    Until now the run printed an estimate before spending and never came back to
+    say whether it had been right.
+    """
+
+    def meter(self, *usages):
+        from lupa.caption import UsageMeter
+        instrument = UsageMeter()
+        for usage in usages:
+            instrument.record(usage)
+        return instrument
+
+    def lines(self, instrument, **kw):
+        from lupa.caption import usage_lines
+        return "\n".join(usage_lines(instrument, **kw))
+
+    def test_it_states_the_totals_the_api_counted(self):
+        text = self.lines(self.meter((588, 103), (600, 120)))
+        self.assertIn("1188", text)
+        self.assertIn("223", text)
+
+    def test_it_puts_the_budget_on_record_next_to_the_measurement(self):
+        from lupa.caption import INPUT_TOKENS_PER_IMAGE, OUTPUT_TOKENS_PER_IMAGE
+        text = self.lines(self.meter((589, 103)))
+        self.assertIn(str(INPUT_TOKENS_PER_IMAGE), text)
+        self.assertIn(str(OUTPUT_TOKENS_PER_IMAGE), text)
+        self.assertIn("589", text)
+
+    def test_it_says_out_loud_when_the_measurement_overran_the_budget(self):
+        text = self.lines(self.meter((1900, 400))).lower()
+        self.assertIn("over", text,
+                      "a budget that no longer covers the bill has to say so")
+
+    def test_it_puts_the_estimate_next_to_the_money_actually_counted(self):
+        text = self.lines(self.meter((1_000_000, 1_000_000)), estimated_cost=1.0,
+                          batch=True, model=DEFAULT_MODEL)
+        self.assertIn("1.00", text)   # estimated
+        self.assertIn("1.40", text)   # measured
+
+    def test_without_a_single_report_it_says_unknown_and_never_zero(self):
+        text = self.lines(self.meter(None, None), estimated_cost=0.5)
+        self.assertIn("unknown", text.lower())
+        self.assertNotIn("0 input", text)
+
+    def test_it_says_how_many_images_never_reported(self):
+        text = self.lines(self.meter((588, 103), None, None))
+        self.assertIn("2", text)
+        self.assertIn("did not report", text.lower())
+
+    def test_a_run_where_every_image_reported_does_not_nag_about_it(self):
+        text = self.lines(self.meter((588, 103)))
+        self.assertNotIn("did not report", text.lower())
+
+    def test_an_axis_over_budget_never_claims_the_run_cost_more_than_quoted(self):
+        """Input a hair over, output far under: this run cost LESS than it quoted.
+
+        Crying under-quote here would be a false alarm about money, which is the
+        exact failure mode this whole measurement exists to end.
+        """
+        text = self.lines(self.meter((1601, 100)), estimated_cost=1.0,
+                          batch=True, model=DEFAULT_MODEL).lower()
+        self.assertIn("input", text)
+        self.assertNotIn("cost more than", text)
+
+    def test_a_run_that_really_did_cost_more_than_quoted_says_so(self):
+        text = self.lines(self.meter((1_000_000, 1_000_000)), estimated_cost=0.01,
+                          batch=True, model=DEFAULT_MODEL).lower()
+        self.assertIn("cost more than", text)
+
+    def test_a_run_inside_both_budgets_raises_no_alarm_at_all(self):
+        text = self.lines(self.meter((500, 100)), estimated_cost=1.0,
+                          batch=True, model=DEFAULT_MODEL).lower()
+        self.assertNotIn("no longer covers", text)
+        self.assertNotIn("cost more than", text)
+
+    def test_it_never_proposes_a_new_budget_by_changing_one(self):
+        from lupa import caption
+        self.assertEqual(caption.INPUT_TOKENS_PER_IMAGE, 1600)
+        self.assertEqual(caption.OUTPUT_TOKENS_PER_IMAGE, 275)
+
+
+class TestTheBudgetsAgreeWithTheMeasurement(unittest.TestCase):
+    """The two budgets are a measurement now. This class is the receipt.
+
+    Measured on 2026-08-20, on one real batch run of 9 images through
+    gemini-3.5-flash-lite: 12741 input and 1970 output tokens over 9 responses,
+    which is 1415.7 input and 218.9 output per image. The input side was then
+    split with the free countTokens endpoint: 333 tokens of prompt, 1080–1107
+    tokens for the image part — and that image part costs the same whether the
+    thumbnail goes up at 128px or at 1536px, so no downscaling moves it.
+
+    What is pinned here is the RELATIONSHIP, not the literal. A budget under the
+    measurement quotes a price nobody will be charged, which is the defect that
+    produced these numbers; a budget far above it frightens people away from a
+    run that really does cost cents. Both directions have a test.
+    """
+    # per image, from the run of 2026-08-20 (n=9, gemini-3.5-flash-lite, batch)
+    MEASURED_INPUT = 1415.7
+    MEASURED_OUTPUT = 218.9
+
+    # countTokens, same day, same model: the prompt is fixed and the image part
+    # is flat, so the input side of one request is these two added together.
+    PROMPT_TOKENS = 333
+    LARGEST_IMAGE_PART = 1107
+
+    def budgets(self):
+        from lupa.caption import INPUT_TOKENS_PER_IMAGE, OUTPUT_TOKENS_PER_IMAGE
+        return INPUT_TOKENS_PER_IMAGE, OUTPUT_TOKENS_PER_IMAGE
+
+    def test_the_input_budget_covers_what_the_api_counted(self):
+        inbound, _ = self.budgets()
+        self.assertGreaterEqual(inbound, self.MEASURED_INPUT,
+                                "the input budget quotes less than the API charged")
+
+    def test_the_output_budget_covers_what_the_api_counted(self):
+        _, outbound = self.budgets()
+        self.assertGreaterEqual(outbound, self.MEASURED_OUTPUT,
+                                "the output budget quotes less than the API charged")
+
+    def test_the_input_budget_covers_the_prompt_plus_the_dearest_image_part(self):
+        inbound, _ = self.budgets()
+        self.assertGreaterEqual(inbound, self.PROMPT_TOKENS + self.LARGEST_IMAGE_PART)
+
+    def test_neither_budget_is_padded_past_a_sane_margin(self):
+        inbound, outbound = self.budgets()
+        self.assertLess(inbound, self.MEASURED_INPUT * 1.5)
+        self.assertLess(outbound, self.MEASURED_OUTPUT * 1.5)

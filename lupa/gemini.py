@@ -18,6 +18,13 @@ BASE = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 
+# What the timeout message says when the caller gave it no command to print.
+# It names the target the person typed, never "<collection>": a collection only
+# enters the registry when a run finishes, and the run that has to be rescued is
+# the one that did not. See cli.resume_command.
+GENERIC_RESUME_HINT = "lupa update <the same target you just used> --resume-batch"
+
+
 class GeminiError(Exception):
     pass
 
@@ -28,6 +35,17 @@ class BatchTimeout(GeminiError):
     Its own type because the two outcomes call for opposite handling: a batch that
     ended badly is dead and its record must go, while this one is alive, resumable,
     and its record is the only thing keeping the money reachable.
+    """
+
+
+class UnknownBatchState(BatchTimeout):
+    """The API answered with a state this version of lupa cannot read.
+
+    A kind of BatchTimeout, deliberately: the money is in exactly the same place.
+    The batch was charged at creation and, for all this code knows, is still
+    working — not understanding a state is not knowing that it died. Callers throw
+    the resume record away when a batch ends badly, and doing that here would
+    delete the only pointer to work already paid for.
     """
 
 
@@ -134,8 +152,38 @@ def _response_text(response):
     return parts[0].get("text") if parts else None
 
 
-def read_batch_results(raw):
-    """Output JSONL → {key: dict}. A failed item drops out without taking the rest."""
+# The names Google writes, not the ones one would guess: these are the properties
+# of GenerateContentResponse.usageMetadata, the same block in the synchronous answer
+# and inside each line of the batch output.
+USAGE_FIELD = "usageMetadata"
+INPUT_FIELD = "promptTokenCount"
+OUTPUT_FIELDS = ("candidatesTokenCount", "thoughtsTokenCount")
+
+
+def usage_of(response):
+    """(input, output) tokens the API says it charged — or None when it said nothing.
+
+    None, never (0, 0): a model that does not report is not a model that ran for
+    free, and a zero here would quietly deflate the very total this measurement
+    exists to produce.
+
+    Thinking tokens are added to the output because that is where they are billed.
+    Leaving them out would under-count exactly the models most likely to spend them.
+    """
+    meta = (response or {}).get(USAGE_FIELD) or {}
+    if not any(field in meta for field in (INPUT_FIELD,) + OUTPUT_FIELDS):
+        return None
+    output = sum(int(meta.get(field) or 0) for field in OUTPUT_FIELDS)
+    return int(meta.get(INPUT_FIELD) or 0), output
+
+
+def read_batch_results(raw, on_usage=None):
+    """Output JSONL → {key: dict}. A failed item drops out without taking the rest.
+
+    on_usage — called once per item with usage_of(...), for the items that failed
+    or came back unreadable too. They were attempted all the same, and an item left
+    out of the accounting is a token that vanishes from the total.
+    """
     from lupa.caption import InvalidResponse, parse_response
 
     out = {}
@@ -147,6 +195,8 @@ def read_batch_results(raw):
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if on_usage is not None:
+            on_usage(usage_of(record.get("response")))
         if record.get("error"):
             continue
         text = _response_text(record.get("response"))
@@ -193,12 +243,19 @@ def _get(url, api_key):
         return response.read()
 
 
-def describe(api_key, prompt, image_bytes, mime, model=DEFAULT_MODEL):
-    """Describes ONE image, now. Used by the synchronous mode and by retries."""
+def describe(api_key, prompt, image_bytes, mime, model=DEFAULT_MODEL, on_usage=None):
+    """Describes ONE image, now. Used by the synchronous mode and by retries.
+
+    on_usage — called with usage_of(response) before anything else can go wrong.
+    The charge happens when the answer arrives, not when it turns out to be
+    usable; reporting only on success is how a run full of failures looks free.
+    """
     from lupa.caption import parse_response
 
     url = f"{BASE}/models/{model}:generateContent"
     response = _post(url, build_content(prompt, image_bytes, mime), api_key)
+    if on_usage is not None:
+        on_usage(usage_of(response))
     text = _response_text(response)
     if not text:
         raise GeminiError("response had no content")
@@ -207,8 +264,60 @@ def describe(api_key, prompt, image_bytes, mime, model=DEFAULT_MODEL):
 
 # --- batch mode: half price, asynchronous ---
 
-TERMINAL_STATES = ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
-                   "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED")
+# What the API actually answers is BATCH_STATE_*. Checked twice on 2026-08-20:
+# in the live discovery document (v1beta, revision 20260816, the enum of
+# GenerateContentBatch.state) and against a real batch, which reported
+# BATCH_STATE_SUCCEEDED. This module used to compare against JOB_STATE_*, a
+# prefix the API never sends, so no batch could ever be seen finishing: every run
+# polled to the three-hour ceiling and died of BatchTimeout on work that had
+# succeeded in two minutes.
+#
+# So the match is on the SUFFIX, not on the whole name. The prefix is the part
+# Google renamed; the suffix is the part that carries the meaning, and it came
+# through the rename untouched (JOB_STATE_SUCCEEDED -> BATCH_STATE_SUCCEEDED).
+# Freezing whole strings from a contract somebody else owns is what turned a
+# rename into a three-hour hang, and the next rename must not be able to do it
+# again. Both spellings of CANCELLED are listed because that one is a coin toss
+# in Google's APIs and the cost of guessing wrong is a wait that never ends.
+TERMINAL_SUFFIXES = ("SUCCEEDED", "FAILED", "CANCELLED", "CANCELED", "EXPIRED")
+
+# Not finished, and not a problem: these mean "keep waiting". Listed so that a
+# state which is neither terminal nor one of these can be told apart from one
+# that merely means the work is still going.
+PENDING_SUFFIXES = ("PENDING", "RUNNING", "QUEUED", "UNSPECIFIED")
+
+# How many polls in a row may report a state nobody here understands before the
+# wait gives up. Three reads is a few seconds of doubt; the alternative it
+# replaces is three hours of it, ending in a message about a timeout that was
+# never the real cause.
+UNKNOWN_STATE_LIMIT = 3
+
+# Kept for callers that read it: the whole names, both prefixes, spelled out.
+TERMINAL_STATES = tuple(f"{prefix}{suffix}" for suffix in TERMINAL_SUFFIXES
+                        for prefix in ("BATCH_STATE_", "JOB_STATE_"))
+
+
+def state_suffix(state):
+    """The meaning-bearing tail of a state name.
+
+    BATCH_STATE_SUCCEEDED -> SUCCEEDED, and so would ANY_NEW_PREFIX_STATE_SUCCEEDED.
+    """
+    text = str(state or "").strip().upper()
+    return text.rsplit("STATE_", 1)[-1] if "STATE_" in text else text
+
+
+def is_succeeded(state):
+    return state_suffix(state) == "SUCCEEDED"
+
+
+def is_terminal(state):
+    """The batch is over, one way or another."""
+    return state_suffix(state) in TERMINAL_SUFFIXES
+
+
+def is_recognised(state):
+    """This code knows what the state means — whether or not it is over."""
+    return state_suffix(state) in TERMINAL_SUFFIXES + PENDING_SUFFIXES
 
 
 def _upload_file(api_key, content, display_name):
@@ -256,24 +365,56 @@ def await_batch(api_key, batch_name, interval=20, timeout_s=3 * 3600, on_update=
     refunds nothing, so the message has to say so and hand back the name.
     """
     deadline = time.time() + timeout_s
+    unreadable = 0
     while time.time() < deadline:
         job = json.loads(_get(f"{BASE}/{batch_name}", api_key))
-        state = (job.get("metadata") or {}).get("state") or job.get("state")
+        metadata = job.get("metadata") or {}
+        state = metadata.get("state") or job.get("state")
         if on_update:
             on_update(state)
 
-        if state == "JOB_STATE_SUCCEEDED":
+        if is_succeeded(state):
+            # Three places, most reliable first. The real answer carries the file
+            # in both `response.responsesFile` and `metadata.output.responsesFile`;
+            # the snake_case one is a leftover kept in case an older shape shows up.
             results = ((job.get("response") or {}).get("responsesFile")
-                       or (job.get("metadata") or {}).get(
-                           "output_config", {}).get("responses_file"))
+                       or (metadata.get("output") or {}).get("responsesFile")
+                       or (metadata.get("output_config") or {}).get("responses_file"))
             if not results:
                 raise GeminiError("batch finished without a results file")
             raw = _get(f"https://generativelanguage.googleapis.com/download/v1beta/"
                        f"{results}:download?alt=media", api_key)
             return raw.decode("utf-8", errors="replace")
 
-        if state in TERMINAL_STATES:
+        if is_terminal(state):
             raise GeminiError(f"batch ended in {state}")
+
+        if is_recognised(state):
+            unreadable = 0
+        else:
+            # Not knowing what the API is saying must be loud and short. Silently
+            # waiting out the ceiling on an unreadable state is precisely how the
+            # JOB_STATE_* defect hid for as long as it did: the only symptom was a
+            # timeout, three hours after the batch had actually finished.
+            unreadable += 1
+            if on_update:
+                on_update(f"!! unrecognised batch state {state!r} "
+                          f"({unreadable}/{UNKNOWN_STATE_LIMIT}) -- lupa cannot tell "
+                          f"whether this batch is running, finished or dead")
+            if unreadable >= UNKNOWN_STATE_LIMIT:
+                known = ", ".join(TERMINAL_SUFFIXES + PENDING_SUFFIXES)
+                raise UnknownBatchState(
+                    f"the API reported the batch state {state!r} {unreadable} times "
+                    f"in a row, and this version of lupa does not know what it "
+                    f"means. Waiting on a state nobody can read would be a silent "
+                    f"wait until the {timeout_s}s ceiling, so it stops here.\n"
+                    f"  the batch was ALREADY CHARGED and may still be running: "
+                    f"nothing here says it failed.\n"
+                    f"  state endings this version understands: {known}\n"
+                    f"  batch name: {batch_name}\n"
+                    f"  check it by hand: GET {BASE}/{batch_name}\n"
+                    f"  resume with: "
+                    f"{resume_hint or GENERIC_RESUME_HINT}")
 
         time.sleep(interval)
 
@@ -282,4 +423,4 @@ def await_batch(api_key, batch_name, interval=20, timeout_s=3 * 3600, on_update=
         f"was ALREADY CHARGED. Giving up here refunds nothing; submitting it again "
         f"would pay for the same images twice.\n"
         f"  batch name: {batch_name}\n"
-        f"  resume with: {resume_hint or 'lupa update <collection> --resume-batch'}")
+        f"  resume with: {resume_hint or GENERIC_RESUME_HINT}")
