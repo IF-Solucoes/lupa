@@ -29,7 +29,7 @@ class TestKey(unittest.TestCase):
         c = diagnose(drive_target(), env={}, existing_files=set())
         key_check = [x for x in c if x.name == "Gemini key"][0]
         self.assertIn("aistudio.google.com", key_check.how_to_fix)
-        self.assertIn("lupa.env", key_check.how_to_fix)
+        self.assertIn("GEMINI_API_KEY", key_check.how_to_fix)
 
     def test_with_a_key_it_passes(self):
         c = diagnose(drive_target(), env=FULL_ENV,
@@ -105,3 +105,18 @@ class TestSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestItNamesTheActualFile(unittest.TestCase):
+    """A fix instruction that names no path makes the reader hunt for the file."""
+
+    def test_the_key_blocker_names_the_settings_file_in_use(self):
+        checks = diagnose(drive_target(), env={}, existing_files=set(),
+                          env_file="/home/someone/.francis/.env")
+        key = [c for c in checks if c.name == "Gemini key"][0]
+        self.assertIn("/home/someone/.francis/.env", key.how_to_fix)
+
+    def test_without_a_known_path_it_still_explains_the_fix(self):
+        checks = diagnose(drive_target(), env={}, existing_files=set())
+        key = [c for c in checks if c.name == "Gemini key"][0]
+        self.assertIn("aistudio.google.com", key.how_to_fix)

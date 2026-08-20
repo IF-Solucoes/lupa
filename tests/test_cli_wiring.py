@@ -36,3 +36,23 @@ class TestIndexRootWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSettingsOverride(unittest.TestCase):
+    """An agent driving the CLI must be able to point at a settings file
+    without touching the process environment."""
+
+    def test_every_command_accepts_an_env_override(self):
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn('"--env"', source)
+
+    def test_the_override_is_applied_before_anything_is_read(self):
+        import ast
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        main = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "main")
+        body = ast.unparse(main)
+        applied = body.index("LUPA_ENV")
+        dispatched = body.index("command_index(args)")
+        self.assertLess(applied, dispatched,
+                        "--env must be applied before a command reads configuration")

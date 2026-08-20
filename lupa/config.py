@@ -11,14 +11,37 @@ DEFAULT_ENV = "~/.lupa/lupa.env"
 DEFAULT_CONFIG = "~/.lupa/collections.json"
 DEFAULT_INDEX_ROOT = "~/.lupa/indexes"
 
+# Where the settings file is looked for, in order. A shared file comes first so
+# that one .env can serve several tools belonging to the same person; the
+# tool-specific path is the fallback and the portable default. `LUPA_ENV`
+# overrides the whole chain.
+ENV_SEARCH_CHAIN = (
+    Path("~/.francis/.env").expanduser(),
+    Path(DEFAULT_ENV).expanduser(),
+)
+
 SETTINGS = ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG", "LUPA_STATE_DIR",
             "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN",
             "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES")
 
 
+def first_existing(candidates):
+    """The first path that exists; otherwise the last candidate, so callers always
+    get something to report in an error message."""
+    candidates = list(candidates)
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
 def env_path():
-    """Where lupa.env lives. LUPA_ENV overrides the default."""
-    return Path(os.environ.get("LUPA_ENV") or DEFAULT_ENV).expanduser()
+    """Where the settings file lives. LUPA_ENV overrides the search chain."""
+    if os.environ.get("LUPA_ENV"):
+        return Path(os.environ["LUPA_ENV"]).expanduser()
+    return first_existing(ENV_SEARCH_CHAIN)
 
 
 def config_path(file_env=None):

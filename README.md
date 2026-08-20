@@ -257,19 +257,40 @@ The contract between the faces is the files. Neither knows the other exists.
 
 ## Configuration
 
-| Variable | Default | Purpose |
+### Where the settings file is found
+
+Looked up in this order, first match wins:
+
+| order | path | for |
+|---|---|---|
+| 1 | `--env <path>` or `$LUPA_ENV` | an explicit choice — what an agent or a script should pass |
+| 2 | `~/.francis/.env` | a shared file, when several tools belong to the same person |
+| 3 | `~/.lupa/lupa.env` | the tool's own file, and the portable default |
+
+Nothing has to exist: with no settings file at all, every variable can come from
+the process environment instead.
+
+```bash
+python3 -m lupa --env ./project.env index ~/Photos/Client
+LUPA_ENV=./project.env python3 -m lupa status
+```
+
+### Settings
+
+| variable | default | purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — | vision model key (required to index) |
 | `LUPA_LANG` | `en` | language of generated captions and tags (`pt`, `es`, …) |
 | `LUPA_MODEL` | `gemini-2.5-flash-lite` | model used for descriptions |
+| `LUPA_BATCH` | `1` | batch mode: half price, asynchronous. `0` forces immediate |
 | `LUPA_CONFIRM_ABOVE` | `200` | ask before describing more images than this |
-| `LUPA_ENV` | `~/.lupa/lupa.env` | where the settings file lives |
 | `LUPA_CONFIG` | `~/.lupa/collections.json` | saved collection registry |
 | `LUPA_INDEXES` | `~/.lupa/indexes` | local mirror of the indexes, read by the MCP |
+| `LUPA_STATE_DIR` | — | shortcut: sets the index mirror to `<dir>/indexes` |
 | `LUPA_OAUTH_CLIENT` / `LUPA_OAUTH_TOKEN` | — | Google Drive credentials |
 
-Nothing here needs to be edited by hand: the first successful run registers the
-collection for you.
+Nothing here needs to be edited by hand to get started: the first successful run
+registers the collection for you.
 
 ## Cost
 

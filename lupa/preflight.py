@@ -37,8 +37,13 @@ def _exists(path, known):
     return Path(str(path)).expanduser().exists()
 
 
-def diagnose(target, env, existing_files=None, index_exists=False):
-    """Returns the checks, in reading order."""
+def diagnose(target, env, existing_files=None, index_exists=False, env_file=None):
+    """Returns the checks, in reading order.
+
+    env_file is the settings file actually in use — naming it beats telling the
+    reader to edit "your env file" and leaving them to find which one.
+    """
+    settings = str(env_file) if env_file else "your settings file"
     checks = []
 
     # 1. The collection
@@ -75,7 +80,7 @@ def diagnose(target, env, existing_files=None, index_exists=False):
         checks.append(Check(
             "Gemini key", BLOCKER, "GEMINI_API_KEY is empty",
             "Get a key at https://aistudio.google.com/apikey and write it into\n"
-            "      your lupa.env    →    GEMINI_API_KEY=your-key"))
+            f"      {settings}    →    GEMINI_API_KEY=your-key"))
 
     # 3. Drive credentials, only when the target is Drive
     if target.kind == "drive":

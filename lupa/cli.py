@@ -161,7 +161,8 @@ def command_index(args):
     index_exists = (index_dir / "MANIFEST.json").exists()
 
     # --- PREFLIGHT: always, no exceptions ---
-    checks = diagnose(target, env, existing_files=None, index_exists=index_exists)
+    checks = diagnose(target, env, existing_files=None, index_exists=index_exists,
+                      env_file=config.env_path())
     print()
     print(format_report(checks, target))
     print()
@@ -296,6 +297,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="lupa", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--env", metavar="PATH",
+                        help="settings file to use, overriding the search chain "
+                             "(same as the LUPA_ENV variable)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for verb in ("index", "update"):
@@ -338,6 +342,12 @@ def main(argv=None):
                         help="also delete the local index directory")
 
     args = parser.parse_args(argv)
+
+    # Applied before any command runs, so every path in this process resolves
+    # from the file the caller chose.
+    if getattr(args, "env", None):
+        os.environ["LUPA_ENV"] = str(Path(args.env).expanduser())
+
     try:
         if args.command in ("index", "update"):
             command_index(args)

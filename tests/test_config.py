@@ -151,3 +151,61 @@ class TestPathConsistency(unittest.TestCase):
         finally:
             del os.environ["LUPA_ENV"]
             Path(env_file).unlink(missing_ok=True)
+
+
+class TestEnvSearchChain(unittest.TestCase):
+    """The settings file is looked up in order, so one shared .env can serve
+    several tools without every tool hardcoding a path."""
+
+    def setUp(self):
+        import os
+        self.saved = os.environ.pop("LUPA_ENV", None)
+
+    def tearDown(self):
+        import os
+        if self.saved is not None:
+            os.environ["LUPA_ENV"] = self.saved
+        else:
+            os.environ.pop("LUPA_ENV", None)
+
+    def test_the_chain_has_the_shared_env_before_the_tool_specific_one(self):
+        from lupa.config import ENV_SEARCH_CHAIN
+        paths = [str(p) for p in ENV_SEARCH_CHAIN]
+        self.assertTrue(any(p.endswith(".francis/.env") for p in paths))
+        shared = next(i for i, p in enumerate(paths) if p.endswith(".francis/.env"))
+        own = next(i for i, p in enumerate(paths) if p.endswith(".lupa/lupa.env"))
+        self.assertLess(shared, own)
+
+    def test_an_explicit_variable_still_wins_over_the_chain(self):
+        import os
+        import tempfile
+        from lupa.config import env_path
+
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as handle:
+            handle.write("GEMINI_API_KEY=explicit\n")
+            chosen = handle.name
+        os.environ["LUPA_ENV"] = chosen
+        try:
+            self.assertEqual(str(env_path()), chosen)
+        finally:
+            Path(chosen).unlink(missing_ok=True)
+
+    def test_it_returns_the_first_file_that_exists(self):
+        import tempfile
+        from lupa.config import first_existing
+
+        with tempfile.TemporaryDirectory() as folder:
+            missing = Path(folder) / "nope.env"
+            present = Path(folder) / "yes.env"
+            present.write_text("X=1\n")
+            self.assertEqual(first_existing([missing, present]), present)
+
+    def test_with_nothing_on_disk_it_falls_back_to_the_last_candidate(self):
+        from lupa.config import first_existing
+
+        candidates = [Path("/no/such/a.env"), Path("/no/such/b.env")]
+        self.assertEqual(first_existing(candidates), candidates[-1])
+
+    def test_an_empty_chain_is_not_a_crash(self):
+        from lupa.config import first_existing
+        self.assertIsNone(first_existing([]))
