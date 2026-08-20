@@ -57,6 +57,13 @@ Cada candidato traz descrição, tags, tipo, link e **por que casou** (`_casou p
 Use o motivo para calibrar: se casou só pelo OCR, a relação pode ser fraca — o texto
 da peça mencionava o termo, mas a imagem talvez não mostre nada disso.
 
+## Acervos de pasta local
+
+Um acervo indexado a partir do disco não tem o OCR do Google. O campo `text` vem
+vazio e a busca por texto embutido nas peças não funciona ali — busque por tags e
+descrição. O `lupa_status` mostra quais acervos existem; o `INDEX.md` de cada um
+mostra o vocabulário real.
+
 ## Quando a busca não acha nada
 
 1. Rode `lupa_status` e veja o vocabulário real do acervo no `INDEX.md`.

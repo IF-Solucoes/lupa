@@ -1,79 +1,81 @@
 ---
 name: lupa-indexar
 description: >-
-  Use quando o usuário quiser CRIAR ou ATUALIZAR o índice de um acervo de imagens do
-  Google Drive — "indexa essas fotos", "atualiza o índice do acervo", "cataloga essa
-  pasta de imagens", "o que mudou nas referências". Descreve cada imagem uma única vez
-  com um modelo de visão barato e escreve um índice textual (`_lupa/`) dentro da própria
-  pasta do Drive, para que qualquer agente encontre imagens SEM abri-las. Incremental:
-  a segunda rodada só paga pelo que mudou. NÃO use para buscar no índice já existente
-  (isso é a skill lupa-buscar) nem para julgar se uma imagem serve a uma marca.
+  Use quando o usuário quiser CRIAR ou ATUALIZAR o índice de um acervo de imagens —
+  "indexa essas fotos", "cataloga essa pasta", "atualiza o índice", "o que mudou nas
+  referências". O acervo pode ser dito de qualquer jeito: URL de pasta do Google Drive,
+  id da pasta, caminho de uma pasta local, ou o apelido de um acervo já indexado. Toda
+  rodada começa por um pré-flight que checa o ambiente, ensina o que falta e mostra o
+  custo antes de gastar. Incremental: só o que mudou custa. NÃO use para buscar no
+  índice (skill lupa-buscar) nem para julgar se uma imagem serve a uma marca.
 ---
 
 # lupa · indexar
 
 ## O que esta skill faz
 
-Transforma uma pasta de imagens do Drive num índice de texto. Cada imagem ganha
-descrição, tags, tipo, paleta e orientação. O índice vive em `_lupa/`, dentro da
-própria pasta do acervo — assim tanto o Claude Code quanto o Cowork o alcançam.
+Transforma uma pasta de imagens num índice de texto, para que agentes encontrem
+referências **sem abrir as imagens**. Cada imagem é descrita uma vez na vida.
 
 **Ela não tem opinião.** Não sabe o que é cliente, marca ou linha editorial. Quem
 julga adequação é a skill consumidora.
 
-## Antes de rodar
-
-1. **O acervo está cadastrado?** `~/.francis/config/lupa.json` precisa ter o par
-   `nome` → `folder_id` (o id da pasta na URL do Drive).
-2. **As credenciais existem?** `~/.francis/secrets/lupa/lupa.env` com `GEMINI_API_KEY`
-   preenchida, e `google-oauth.json` baixado. O README de lá tem o passo a passo.
-
-## Os dois verbos
+## Um comando, e o usuário não precisa saber de nada
 
 ```bash
-python3 -m lupa index <acervo>     # primeira vez na vida do acervo
-python3 -m lupa update <acervo>    # todas as outras vezes
+python3 -m lupa index <alvo>
 ```
 
-**Sempre prefira `update`.** Ele reconcilia: descreve as novas, redescreve as que
-mudaram de conteúdo, remove do catálogo as que sumiram, e **pula as intactas sem
-gastar nada**. Rodar `update` num acervo sem mudanças custa zero.
+O alvo pode ser qualquer uma destas formas — não pergunte ao usuário qual delas
+ele tem, apenas passe o que ele disser:
 
-O `index` só serve para o primeiro dia. Se o acervo já tem índice, ele se recusa a
-agir e manda você para o `update` — porque refazer custa dinheiro e apaga histórico.
+| O usuário disse | Exemplo |
+|---|---|
+| a URL da pasta no Drive | `https://drive.google.com/drive/folders/1a2B3c` |
+| o id da pasta | `1a2B3c` |
+| um caminho no disco | `~/Fotos/Cliente` ou `/mnt/g/Meu Drive/Clientes` |
+| o apelido de um acervo já indexado | `if-editorial` |
 
-## Antes de gastar, planeje
+`index` e `update` são o mesmo comando. O lupa olha o índice e decide se é a
+primeira rodada ou uma atualização. **Nunca pergunte ao usuário qual usar.**
 
-```bash
-python3 -m lupa update <acervo> --dry-run
-```
+## O pré-flight roda sempre — leia o que ele diz
 
-Mostra quantas imagens seriam descritas e o custo estimado, sem escrever nada e
-sem chamar o modelo. **Use isto sempre que o acervo for grande ou desconhecido.**
+Antes de qualquer gasto, o comando imprime o diagnóstico e o plano:
 
-Acima de 200 imagens novas, o comando pergunta antes de prosseguir. Para rodar sem
-interação (agente autônomo), passe `--yes` — mas só depois de ter visto o `--dry-run`.
+- **`✗` (bloqueio)** — ele parou e não gastou nada. A própria mensagem traz o passo
+  a passo da correção. **Repasse ao usuário exatamente essa instrução**, não invente
+  outra.
+- **`!` (aviso)** — segue funcionando. O caso mais comum: a pasta apontada é o Drive
+  montado no disco. Vale mencionar ao usuário o que ele ganharia colando a URL do
+  Drive (OCR de graça, link compartilhável, id estável), sem obrigá-lo a mudar.
+- **Plano** — quantas imagens serão descritas e o custo. Se disser "Nada mudou",
+  a rodada acabou ali: relate isso e pare.
+
+Para ver só o plano, sem executar: `--dry-run`.
+Para rodar sem interação (agente autônomo): `--yes` — mas só depois de ter lido o plano.
+
+## Depois da rodada
+
+O comando salva o acervo com um apelido (tirado do nome da pasta), publica o índice
+no Drive quando a origem é o Drive, e imprime o resumo. Relate ao usuário o que mudou
+(`+N novas · ~N alteradas · -N removidas`) e o custo. Se houver falhas, elas estão em
+`runs/<data>.errors.jsonl`.
 
 ## Refazer do zero (raro, e caro)
 
 ```bash
-python3 -m lupa index <acervo> --rebuild --confirm "<nome-do-acervo>"
+python3 -m lupa index <apelido> --rebuild --confirm "<apelido>"
 ```
 
-Exige digitar o nome do acervo. O índice anterior é copiado para `_lupa/.backup/`
-antes de qualquer escrita. Só faça isso se o schema mudou ou se o índice corrompeu.
-
-## Ao terminar
-
-O comando imprime o resumo da rodada e publica o `_lupa/` no Drive. Relate ao
-usuário o que mudou (`+N novas · ~N alteradas · -N removidas`) e o custo. Se houver
-falhas, elas estão em `_lupa/runs/<data>.errors.jsonl` — mencione quantas foram.
+Exige digitar o apelido. O índice anterior vai para `.backup/` antes de qualquer
+escrita. Só faça se o schema mudou ou o índice corrompeu.
 
 ## Erros comuns
 
-| Sintoma | Causa | Saída |
-|---|---|---|
-| `✋ Este acervo já tem índice` | usou `index` no lugar de `update` | rode `update` |
-| `⏳ Outra execução está usando este índice` | duas rodadas ao mesmo tempo | espere, ou apague `_lupa/.lock` se tiver certeza |
-| `GEMINI_API_KEY vazia` | credencial não preenchida | veja `~/.francis/secrets/lupa/README.md` |
-| `Acervo "X" não está em lupa.json` | acervo não cadastrado | adicione `nome` + `folder_id` ao config |
+| Sintoma | Saída |
+|---|---|
+| `✗ chave do Gemini` | siga a instrução impressa; a chave vai em `~/.francis/secrets/lupa/lupa.env` |
+| `✗ acesso ao Google Drive` | falta o `google-oauth.json`; a mensagem traz os 3 passos |
+| `Não entendi "<x>"` | o alvo não é URL, id nem pasta existente — peça a URL da pasta ao usuário |
+| `⏳ Outra execução está usando este índice` | espere, ou apague `_lupa/.lock` se tiver certeza |

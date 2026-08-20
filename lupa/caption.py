@@ -125,3 +125,12 @@ def estimar_custo(quantidade, batch=True):
     saida = quantidade * TOKENS_SAIDA_POR_IMAGEM / 1_000_000 * PRECO_SAIDA
     total = entrada + saida
     return round(total * (0.5 if batch else 1.0), 6)
+
+
+def formatar_custo(valor):
+    """Custo para ler, não para contabilizar. Centavo de dólar não merece 6 casas."""
+    if not valor:
+        return "US$ 0.00"
+    if valor < 0.01:
+        return "menos de US$ 0.01"
+    return f"US$ {valor:.2f}"

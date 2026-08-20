@@ -170,3 +170,10 @@ def enviar_arquivo(servico, pasta_id, caminho_local, nome_remoto=None):
     corpo = {"name": nome, "parents": [pasta_id]}
     return servico.files().create(body=corpo, media_body=midia, fields="id",
                                   supportsAllDrives=True).execute()["id"]
+
+
+def nome_da_pasta(servico, folder_id):
+    """O nome que a pessoa vê no Drive — vira o apelido do acervo."""
+    info = servico.files().get(fileId=folder_id, fields="name",
+                               supportsAllDrives=True).execute()
+    return info.get("name") or folder_id

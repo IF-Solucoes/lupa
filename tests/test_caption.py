@@ -97,3 +97,21 @@ class TestCusto(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFormatoDoCusto(unittest.TestCase):
+    def test_valor_minusculo_nao_vira_notacao_cientifica(self):
+        from lupa.caption import formatar_custo
+        self.assertNotIn("e-", formatar_custo(0.00007))
+
+    def test_valor_abaixo_de_um_centavo_e_dito_por_extenso(self):
+        from lupa.caption import formatar_custo
+        self.assertIn("menos de", formatar_custo(0.00007))
+
+    def test_valor_normal_sai_com_duas_casas(self):
+        from lupa.caption import formatar_custo
+        self.assertEqual(formatar_custo(1.234), "US$ 1.23")
+
+    def test_zero_e_dito_como_zero(self):
+        from lupa.caption import formatar_custo
+        self.assertIn("0", formatar_custo(0))

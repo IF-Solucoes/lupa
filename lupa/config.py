@@ -65,3 +65,43 @@ def resolver_raiz_indices(processo_env, arquivo_env):
     if arquivo_env.get("LUPA_STATE_DIR"):
         return Path(arquivo_env["LUPA_STATE_DIR"]).expanduser() / "indices"
     return Path(RAIZ_INDICES_PADRAO).expanduser()
+
+
+def registrar_acervo(config, alvo):
+    """Guarda o acervo para que da próxima vez baste o apelido.
+
+    O usuário nunca precisa editar o arquivo à mão: quem cadastra é a primeira
+    execução bem-sucedida.
+    """
+    config = dict(config or {})
+    acervos = [dict(a) for a in config.get("acervos") or []]
+
+    registro = {"nome": alvo.nome}
+    if alvo.tipo == "drive":
+        registro["folder_id"] = alvo.folder_id
+    else:
+        registro["caminho"] = str(alvo.caminho)
+
+    for i, existente in enumerate(acervos):
+        if existente.get("nome") == alvo.nome:
+            acervos[i] = {**existente, **registro}
+            break
+    else:
+        acervos.append(registro)
+
+    config["acervos"] = acervos
+    return config
+
+
+def alvo_de_cadastro(registro):
+    """Converte uma entrada do config de volta num Alvo."""
+    from lupa.alvo import Alvo
+    if registro.get("folder_id"):
+        return Alvo("drive", registro["nome"], folder_id=registro["folder_id"])
+    return Alvo("local", registro["nome"], caminho=Path(registro["caminho"]).expanduser())
+
+
+def gravar_config(config, caminho=CONFIG_PADRAO):
+    arquivo = Path(str(caminho)).expanduser()
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    arquivo.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")

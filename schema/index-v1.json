@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/mindtec-victorf/lupa/schema/index-v1.json",
+  "$id": "https://github.com/IF-Solucoes/lupa/schema/index-v1.json",
   "title": "lupa · linha do catalog.jsonl (v1)",
   "type": "object",
   "required": ["id", "file", "url", "kind", "medium", "caption", "tags", "hash", "v"],

@@ -38,10 +38,24 @@ perguntas são respondidas sobre texto.
 
 Da segunda rodada em diante, só o que mudou custa alguma coisa.
 
+### Pasta local e pasta do Drive não são a mesma coisa
+
+Você pode indexar uma pasta do disco — inclusive a que o Google Drive for Desktop
+sincroniza. Funciona, e o lupa detecta esse caso. Mas pela API do Drive você ganha
+três coisas que o disco não dá:
+
+- **o OCR que o Google já fez**, de graça — sem ele, o texto embutido nas peças
+  não entra na busca;
+- **links `https` compartilháveis**, que o Cowork e outras pessoas abrem;
+- **o id imutável de cada arquivo** — renomear a pasta deixa de forçar reindexação.
+
+Quando você aponta uma pasta montada, o pré-flight avisa e segue em frente. A
+escolha é informada, não obrigatória.
+
 ## Instalação
 
 ```bash
-git clone https://github.com/mindtec-victorf/lupa
+git clone https://github.com/IF-Solucoes/lupa
 cd lupa && python3 -m unittest discover -s tests   # 146 testes, sem rede
 ```
 
@@ -59,11 +73,46 @@ Escopos usados: `drive.readonly` para ler o acervo e `drive.file` para escrever
 
 ## Uso
 
+Aponte para o acervo do jeito que for mais fácil. O `lupa` entende os quatro:
+
 ```bash
-python3 -m lupa index  <acervo>            # primeira vez — recusa sobrescrever
-python3 -m lupa update <acervo>            # o verbo do dia a dia
-python3 -m lupa update <acervo> --dry-run  # o plano e o custo, sem gastar
-python3 -m lupa search "pão forno" --kind foto
+python3 -m lupa index "https://drive.google.com/drive/folders/1a2B3c"   # URL do Drive
+python3 -m lupa index 1a2B3c                                            # id da pasta
+python3 -m lupa index ~/Fotos/Cliente                                   # pasta local
+python3 -m lupa index if-editorial                                      # apelido, depois da 1ª vez
+```
+
+`index` e `update` fazem a mesma coisa: o lupa olha o índice e decide se é a
+primeira rodada ou uma atualização. **Você não precisa escolher.**
+
+### Toda rodada começa pelo pré-flight
+
+Antes de gastar um centavo, o comando checa o ambiente, explica o que falta e
+mostra o plano:
+
+```
+Pré-flight · acervo "if-editorial"
+
+  ✓ acervo: pasta do Google Drive · id 1a2B3c · apelido "if-editorial"
+  ✓ origem do acervo: pela API do Drive — com OCR e link compartilhável
+  ✗ chave do Gemini: GEMINI_API_KEY está vazia
+      Pegue uma chave em https://aistudio.google.com/apikey e escreva em
+      ~/.francis/secrets/lupa/lupa.env    →    GEMINI_API_KEY=sua-chave
+  ✓ estado do índice: já existe — será um update, só o que mudou custa
+
+Plano desta rodada
+  +40 novas · ~3 alteradas · -5 removidas · =3364 intactas
+  imagens a descrever: 43
+  custo estimado: menos de US$ 0.01
+```
+
+Com um `✗`, ele para e não gasta nada. Sem `✗`, ele mostra o plano e pergunta
+antes de prosseguir. `--dry-run` para logo depois do plano; `--yes` não pergunta.
+
+### Consultar
+
+```bash
+python3 -m lupa search "pão forno luz quente" --kind foto
 python3 -m lupa status
 ```
 

@@ -77,3 +77,45 @@ class TestRaizDeIndices(unittest.TestCase):
     def test_sem_nada_cai_no_padrao_portatil(self):
         from lupa.config import resolver_raiz_indices
         self.assertTrue(str(resolver_raiz_indices({}, {})).endswith(".lupa/indices"))
+
+
+class TestAutoCadastro(unittest.TestCase):
+    def test_acervo_novo_e_registrado(self):
+        from lupa.config import registrar_acervo
+        from lupa.alvo import Alvo
+        cfg = registrar_acervo({"acervos": []}, Alvo("drive", "if", folder_id="ABC"))
+        self.assertEqual(cfg["acervos"][0]["nome"], "if")
+        self.assertEqual(cfg["acervos"][0]["folder_id"], "ABC")
+
+    def test_acervo_local_guarda_o_caminho(self):
+        from lupa.config import registrar_acervo
+        from lupa.alvo import Alvo
+        from pathlib import Path
+        cfg = registrar_acervo({}, Alvo("local", "fotos", caminho=Path("/tmp/fotos")))
+        self.assertEqual(cfg["acervos"][0]["caminho"], "/tmp/fotos")
+
+    def test_registrar_duas_vezes_nao_duplica(self):
+        from lupa.config import registrar_acervo
+        from lupa.alvo import Alvo
+        a = Alvo("drive", "if", folder_id="ABC")
+        cfg = registrar_acervo(registrar_acervo({}, a), a)
+        self.assertEqual(len(cfg["acervos"]), 1)
+
+    def test_mesmo_nome_com_alvo_diferente_atualiza_o_registro(self):
+        from lupa.config import registrar_acervo
+        from lupa.alvo import Alvo
+        cfg = registrar_acervo({}, Alvo("drive", "if", folder_id="ABC"))
+        cfg = registrar_acervo(cfg, Alvo("drive", "if", folder_id="NOVO"))
+        self.assertEqual(len(cfg["acervos"]), 1)
+        self.assertEqual(cfg["acervos"][0]["folder_id"], "NOVO")
+
+    def test_alvo_a_partir_de_acervo_cadastrado(self):
+        from lupa.config import alvo_de_cadastro
+        a = alvo_de_cadastro({"nome": "if", "folder_id": "ABC"})
+        self.assertEqual(a.tipo, "drive")
+        self.assertEqual(a.folder_id, "ABC")
+
+    def test_alvo_local_a_partir_de_cadastro(self):
+        from lupa.config import alvo_de_cadastro
+        a = alvo_de_cadastro({"nome": "fotos", "caminho": "/tmp/fotos"})
+        self.assertEqual(a.tipo, "local")

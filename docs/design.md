@@ -24,9 +24,10 @@ Três verbos, e nada além disso:
 
 | Verbo | Faz | Custo |
 |---|---|---|
-| `index` | primeira passada num acervo; escreve `_lupa/` | 1× por imagem |
-| `update` | reconcilia: descreve novas, redescreve alteradas, remove sumidas | só o delta |
+| `index` / `update` | são o mesmo comando: o lupa lê o índice e decide se é a primeira passada ou uma reconciliação | 1× por imagem, depois só o delta |
 | `search` | consulta e devolve ≤15 candidatos com URL e motivo | zero |
+
+O usuário nunca escolhe entre `index` e `update` — essa decisão é do programa.
 
 ## 3. Não-objetivos (a fronteira)
 
@@ -39,8 +40,10 @@ Fora de escopo, deliberadamente:
 - Julgar se uma imagem é boa, bonita ou adequada a uma marca.
 - Vocabulário controlado global de tags.
 - Embeddings e busca vetorial (CLIP). O índice textual resolve o caso de uso.
-- Suporte a pasta local. A fonte é o Google Drive.
 - Editar os arquivos do acervo. O lupa só cria os arquivos do próprio `_lupa/`.
+
+> **Revisão de 2026-08-20:** pasta local voltou ao escopo, a pedido do dono. Ver
+> a seção 5.5.
 
 ## 4. Achados que fundamentam o design
 
@@ -144,6 +147,41 @@ A classificação começa determinística, e o VLM só desempata:
 | Densidade de OCR | zero | muito texto → `peca`/`grafico`; nenhum → `foto` |
 | Formato | zero | PNG grande sem EXIF → export de design |
 | VLM | já pago | `medium` (físico vs digital) e os casos ambíguos |
+
+### 5.5 De onde vem o acervo — e por que isso ainda importa
+
+O usuário aponta o acervo do jeito que for mais fácil: URL da pasta no Drive, id
+solto, caminho no disco, ou o apelido de um acervo já indexado. O `lupa` resolve
+sozinho; ninguém precisa saber o que é um `folder_id`, e ninguém edita config à mão
+(a primeira rodada bem-sucedida cadastra o acervo).
+
+A origem, porém, não é indiferente. Pela API do Drive vêm três coisas que o disco
+não dá:
+
+| | pasta no disco | API do Drive |
+|---|---|---|
+| descrever, classificar, buscar, incremental | idêntico | idêntico |
+| OCR e labels de graça | não existem | vêm no metadado, custo zero |
+| link do resultado | `file://…`, inútil fora da máquina | `https://…`, abre em qualquer lugar |
+| identidade do arquivo | é o caminho: renomear força reindexar | `id` imutável |
+
+O caso ambíguo é a pasta do **Google Drive for Desktop montada no disco**. Ela
+parece local e é o Drive. O `lupa` detecta (`lupa/montagem.py`) e o pré-flight
+explica o que se ganha ao fornecer a URL — **sem bloquear**. A escolha é informada,
+não obrigatória.
+
+### 5.6 O pré-flight é obrigatório
+
+Não é uma flag, é a primeira etapa de toda rodada. Ele:
+
+1. resolve o alvo e descobre o apelido real do acervo (o nome da pasta, não o id);
+2. checa chave do Gemini, credencial do Drive, sessão de login e origem do acervo;
+3. para em qualquer `✗`, **sem gastar nada**, imprimindo o passo a passo da correção;
+4. roda o `--dry-run` e mostra o plano e o custo;
+5. só então pergunta se prossegue.
+
+A mensagem de erro é a documentação. Quem chama o `lupa` — pessoa ou agente —
+recebe a instrução exata em vez de um traceback.
 
 ## 6. Atualização incremental
 
