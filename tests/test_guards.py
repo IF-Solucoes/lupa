@@ -1,5 +1,11 @@
 """Guardrails: the index does not rebuild itself by accident."""
+import io
+import json
+import contextlib
+import subprocess
+import sys
 import time
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,9 +74,25 @@ class TestLock(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
+        self.corpses = []
+        self.notices = []
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def _a_pid_that_is_certainly_dead(self):
+        """A real child process, run to completion. Its pid existed for sure, and
+        by the time this returns it is gone for sure. A made-up number like 999999
+        proves nothing: on someone else's machine it may well be in use."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        # The Popen object is kept alive on purpose: while its handle is open
+        # Windows will not hand the pid to anyone else, so the test cannot flake.
+        self.corpses.append(child)
+        return child.pid
+
+    def _write_lock(self, pid, started):
+        (self.dir / ".lock").write_text(json.dumps({"pid": pid, "started": started}))
 
     def test_a_second_concurrent_run_is_blocked(self):
         with Lock(self.dir):
@@ -86,9 +108,95 @@ class TestLock(unittest.TestCase):
 
     def test_a_stale_lock_is_reclaimed(self):
         stale = time.time() - MAX_LOCK_AGE_S - 60
-        (self.dir / ".lock").write_text('{"pid": 999999, "started": %f}' % stale)
-        with Lock(self.dir):  # does not raise: o dono sumiu faz tempo
+        self._write_lock(self._a_pid_that_is_certainly_dead(), stale)
+        with Lock(self.dir, on_notice=self.notices.append):  # does not raise
             pass
+
+    def test_a_lock_whose_owner_is_dead_is_reclaimed_however_fresh_it_is(self):
+        """The defect this file exists for: a killed run leaves a .lock behind, and
+        for half an hour the recovery lupa itself recommends (--resume-batch) is
+        refused by the corpse of the run that failed. The pid is right there."""
+        dead = self._a_pid_that_is_certainly_dead()
+        self._write_lock(dead, time.time())      # seconds old: age alone would keep it
+        with contextlib.redirect_stderr(io.StringIO()):
+            with Lock(self.dir):                 # does not raise
+                pass
+
+    def test_reclaiming_a_dead_owner_is_announced_with_the_pid(self):
+        dead = self._a_pid_that_is_certainly_dead()
+        self._write_lock(dead, time.time())
+        with Lock(self.dir, on_notice=self.notices.append):
+            pass
+        said = " ".join(self.notices)
+        self.assertIn(str(dead), said)
+        self.assertIn("no longer exists", said)
+
+    def test_the_announcement_lands_on_stderr_when_nobody_is_listening(self):
+        dead = self._a_pid_that_is_certainly_dead()
+        self._write_lock(dead, time.time())
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with Lock(self.dir):
+                pass
+        self.assertIn(str(dead), stderr.getvalue())
+
+    def test_a_live_owner_still_blocks(self):
+        self._write_lock(os.getpid(), time.time())   # this very process is alive
+        with self.assertRaises(LockBusy):
+            with Lock(self.dir):
+                pass
+
+    def test_a_recycled_pid_does_not_pass_for_the_owner(self):
+        """The pid is alive, but it belongs to a process that started AFTER the
+        lock was written, so it cannot be the one that wrote it."""
+        from lupa.guards import process_started_at
+        born = process_started_at(os.getpid())
+        if born is None:
+            self.skipTest("process creation time is not readable on this platform")
+        self._write_lock(os.getpid(), born - 60)     # young enough to survive the age rule
+        with Lock(self.dir, on_notice=self.notices.append):   # does not raise
+            pass
+
+    def test_age_still_reclaims_a_lock_whose_owner_is_alive(self):
+        """The safety net for the hung-but-breathing run."""
+        self._write_lock(os.getpid(), time.time() - MAX_LOCK_AGE_S - 60)
+        with Lock(self.dir, on_notice=self.notices.append):   # does not raise
+            pass
+
+    def test_an_unreadable_lock_is_still_reclaimed(self):
+        (self.dir / ".lock").write_text("{not json at all")
+        with Lock(self.dir, on_notice=self.notices.append):   # does not raise
+            pass
+
+    def test_a_lock_without_a_pid_falls_back_to_age(self):
+        (self.dir / ".lock").write_text(json.dumps({"started": time.time()}))
+        with self.assertRaises(LockBusy):
+            with Lock(self.dir):
+                pass
+
+    def test_this_process_reads_as_alive(self):
+        from lupa.guards import owner_is_alive
+        self.assertTrue(owner_is_alive(os.getpid()))
+
+    def test_a_dead_child_reads_as_dead(self):
+        from lupa.guards import owner_is_alive
+        self.assertFalse(owner_is_alive(self._a_pid_that_is_certainly_dead()))
+
+    def test_a_nonsense_pid_is_never_alive(self):
+        from lupa.guards import owner_is_alive
+        for pid in (0, -1, None, "17"):
+            self.assertFalse(owner_is_alive(pid), pid)
+
+    def test_a_run_does_not_delete_a_lock_that_was_taken_from_it(self):
+        """A run whose lock was reclaimed under it (the 30 min rule firing during
+        a 3 h batch) must not delete the file on its way out: it belongs to
+        whoever took it, and removing it would open the index to a third run."""
+        outer = Lock(self.dir, on_notice=self.notices.append)
+        outer.__enter__()
+        self._write_lock(os.getpid(), time.time())   # somebody else took it over
+        outer.__exit__(None, None, None)
+        self.assertTrue((self.dir / ".lock").exists())
+        self.assertIn("Not releasing", " ".join(self.notices))
 
     def test_the_lock_is_removed_even_on_error(self):
         with self.assertRaises(ValueError):
