@@ -1,0 +1,21 @@
+{
+  "name": "lupa",
+  "displayName": "lupa",
+  "version": "0.3.0",
+  "description": "Visual collection index for AI agents: describe every image in a Google Drive folder or local directory once, then search it as text — the agent never opens the images.",
+  "author": {
+    "name": "IF Soluções"
+  },
+  "homepage": "https://github.com/IF-Solucoes/lupa",
+  "repository": "https://github.com/IF-Solucoes/lupa",
+  "license": "MIT",
+  "keywords": [
+    "images",
+    "index",
+    "google-drive",
+    "search",
+    "vision",
+    "assets",
+    "dam"
+  ]
+}

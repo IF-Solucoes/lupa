@@ -84,13 +84,35 @@ informed, not mandatory.
 
 ## Install
 
+### In Claude Code — the full plugin
+
 ```bash
-git clone https://github.com/IF-Solucoes/lupa
-cd lupa && python3 -m unittest discover -s tests   # 220 tests, no network
+/plugin marketplace add IF-Solucoes/lupa
+/plugin install lupa@lupa
 ```
 
-As a Claude Code plugin, the MCP server starts on its own — it has no dependencies
-beyond the Python standard library.
+That brings the three skills and the MCP server (`lupa_search`, `lupa_status`),
+which Claude Code starts on its own. The server has no dependencies beyond the
+Python standard library.
+
+### In Claude Cowork or claude.ai — the reading face
+
+Cowork installs skills as a zip, not as a plugin, so that face ships separately:
+
+1. download [`dist/lupa-cowork.zip`](dist/lupa-cowork.zip) from this repository
+2. in Claude: **Settings → Capabilities → Skills → +** and upload the zip
+
+It teaches the agent to read an index that already exists in Drive, through the
+connector. It executes nothing and cannot index — indexing lives in Claude Code.
+Rebuild the zip after editing the skill with
+`python3 scripts/build_cowork_skill.py`.
+
+### From source
+
+```bash
+git clone https://github.com/IF-Solucoes/lupa
+cd lupa && python3 -m unittest discover -s tests   # 308 tests, no network
+```
 
 To **index** (not to search) you also need:
 
@@ -101,9 +123,6 @@ To **index** (not to search) you also need:
 `pip install Pillow` is optional. Without it, contact sheets are skipped and local
 images are sent at full size — which works, but costs more per image. Drive
 collections do not need it: the thumbnails come from Google.
-
-Scopes used: `drive.readonly` to read the collection and `drive.file` to write
-**only** the files lupa itself creates. It never modifies a file of yours.
 
 ## Usage
 

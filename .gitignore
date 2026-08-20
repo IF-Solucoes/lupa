@@ -18,3 +18,7 @@ client_secret*.json
 *.db
 *.db.tmp
 .thumbs/
+
+# o pacote da face Cowork é um artefato de release, versionado de propósito
+!dist/
+!dist/*.zip

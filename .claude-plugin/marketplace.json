@@ -1,0 +1,28 @@
+{
+  "name": "lupa",
+  "description": "lupa — visual collection index for AI agents",
+  "owner": {
+    "name": "IF Soluções",
+    "url": "https://github.com/IF-Solucoes"
+  },
+  "plugins": [
+    {
+      "name": "lupa",
+      "description": "Describe every image in a collection once, then search it as text. Google Drive or a local folder, incremental updates, and an MCP server with BM25 ranking.",
+      "version": "0.3.0",
+      "source": ".",
+      "author": {
+        "name": "IF Soluções"
+      },
+      "license": "MIT",
+      "homepage": "https://github.com/IF-Solucoes/lupa",
+      "keywords": [
+        "images",
+        "index",
+        "google-drive",
+        "search",
+        "vision"
+      ]
+    }
+  ]
+}
