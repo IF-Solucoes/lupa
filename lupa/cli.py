@@ -467,7 +467,7 @@ def command_index(args):
 
     # --- PREFLIGHT: always, no exceptions ---
     checks = diagnose(target, env, existing_files=None, index_exists=index_exists,
-                      env_file=config.env_path())
+                      env_file=config.env_path(), rebuild=args.rebuild)
     print()
     print(format_report(checks, target))
     print()
@@ -475,7 +475,16 @@ def command_index(args):
     if has_blocker(checks):
         sys.exit("Fix the items marked ✗ and run again. Nothing was spent.\n")
 
-    if args.retry_failed:
+    if args.retry_failed and args.rebuild:
+        # Not a contradiction, but not a no-op either, and that is the problem:
+        # --retry-failed EDITS MANIFEST.json, here, before the pipeline takes the
+        # backup that is supposed to preserve it. Under --rebuild the manifest is
+        # ignored anyway — every image is described again — so the edit buys
+        # nothing and damages the copy. Skipped, out loud.
+        print("  --retry-failed does nothing under --rebuild: a rebuild describes "
+              "every image again.\n  Skipping it, so the backup keeps the manifest "
+              "exactly as it is now.\n")
+    elif args.retry_failed:
         from lupa.recovery import forget_failed, read_failures
         retried = forget_failed(index_dir, read_failures(index_dir))
         print(f"  retrying {retried} images that failed in earlier runs\n"
@@ -484,9 +493,13 @@ def command_index(args):
     source, service = build_source(target, env, root / ".cache" / target.name,
                                   recursive=not args.no_recursive)
 
+    # rebuild travels with the preview, or the plan and the price printed below
+    # describe a run nobody asked for: without it the preview reconciles against
+    # the manifest that --rebuild discards, and an unchanged collection prints
+    # "0 images to describe · US$ 0.00" for a run about to re-describe all of it.
     preview = run_pipeline(collection=target.name, index_dir=index_dir, source=source,
                            describe=lambda *a: {}, mode="update", now=utc_stamp(),
-                           dry_run=True)
+                           dry_run=True, rebuild=args.rebuild)
     plan = preview["plan"]
     pending = len(plan.to_describe)
 

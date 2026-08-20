@@ -134,6 +134,21 @@ python -m lupa index <name> --rebuild --confirm "<name>"
 It requires typing the name. The previous index is copied to `.backup/` before any
 write. Do this only when the schema changed or the index is corrupt.
 
+A rebuild is **not** an incremental update: it ignores what is already indexed and
+describes every image again, at full price. Preflight marks it (`! index state`)
+and the plan counts the whole collection — read those two numbers to the user
+before confirming, because on a large collection this is the most expensive command
+lupa has.
+
+Two things not to be surprised by:
+
+- `--retry-failed` adds nothing to a rebuild and is skipped, out loud: everything
+  gets described again anyway.
+- If a batch is still registered as in flight, the run refuses, rebuild or not —
+  that money is already spent. Collect it first (`--resume-batch`). A batch
+  submitted for a handful of changed images cannot serve a rebuild, and lupa says
+  so instead of writing a half-empty index.
+
 ## Common errors
 
 | Symptom | What to do |
