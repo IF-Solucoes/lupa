@@ -5,12 +5,17 @@ money with it. These tests cover the record that makes a batch resumable: writte
 before the wait begins, cleared once the answers land, refused when the collection
 drifted underneath it, and never published to Drive.
 """
+import contextlib
+import io
 import json
+import os
+import shlex
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from lupa import cli, gemini, inflight
+from lupa import cli, config, gemini, inflight
 
 IDS = ["a", "b"]
 MODEL = "gemini-2.5-flash-lite"
@@ -345,6 +350,257 @@ class TestTheRecordNeverLeavesTheMachine(unittest.TestCase):
 
         self.assertIn("catalog.jsonl", names)
         self.assertNotIn(inflight.RECORD_NAME, names)
+
+
+def pasted_target(message):
+    """The argument the printed instruction asks for, as a shell hands it over.
+
+    Quotes are consumed the way a terminal consumes them, so a target with a
+    space in it only survives this function if the instruction quoted it — which
+    is the point: on Windows the target is a path, and a path has a space in it
+    more often than not.
+    """
+    lines = [line for line in str(message).splitlines()
+             if "lupa update" in line and "--resume-batch" in line]
+    if not lines:
+        raise AssertionError(f"no resume instruction was printed at all:\n{message}")
+    words = shlex.split(lines[0].strip(), posix=False)
+    token = words[words.index("update") + 1]
+    if len(token) > 1 and token[0] == token[-1] and token[0] in "\"'":
+        token = token[1:-1]
+    return token
+
+
+class BatchThatNeverFinishes:
+    """Stands in for the network, and for nothing else.
+
+    The real gemini.await_batch runs — its own loop, its own deadline, its own
+    message — against a job that stays RUNNING, so the instruction under test is
+    the one lupa actually writes, not one the test made up.
+
+    kill — the run is killed while it waits, the way a closed terminal or a
+    Ctrl-C kills it. KeyboardInterrupt, not an Exception, so it goes straight up
+    through the pipeline instead of being filed as a failed image: this is the
+    run the receipt on disk exists for, and the run that never reaches the
+    registration at the end of command_index.
+    """
+
+    def __init__(self, real, kill=False):
+        self.real = real
+        self.kill = kill
+        self.hints = []
+        self.message = None
+        # The registry as it stood WHILE the instruction was on the screen. The
+        # instruction is printed here, not at the end of the run, so this is the
+        # registry it has to work against.
+        self.registry_while_waiting = None
+
+    def __call__(self, api_key, batch_name, **kw):
+        self.hints.append(kw.get("resume_hint"))
+        self.registry_while_waiting = config.read_config(file_env=config.environment())
+        kw.pop("interval", None)
+        kw.pop("timeout_s", None)
+        saved = gemini._get
+        gemini._get = lambda url, key: json.dumps(
+            {"metadata": {"state": "JOB_STATE_RUNNING"}}).encode()
+        try:
+            return self.real(api_key, batch_name, interval=0.01, timeout_s=0.03, **kw)
+        except gemini.BatchTimeout as timed_out:
+            self.message = str(timed_out)
+            if self.kill:
+                raise KeyboardInterrupt() from None
+            raise
+        finally:
+            gemini._get = saved
+
+
+class TestThePrintedResumeInstructionIsExecutable(unittest.TestCase):
+    """The line that rescues money already spent must work pasted, unchanged, at
+    the moment it is printed.
+
+    Reproduced live with a real paid batch: a run died waiting, printed
+    `lupa update lote-prova --resume-batch`, and that command answered
+    `I could not make sense of "lote-prova"`. A collection only enters the
+    registry at the END of a run that finished, and a run that dies waiting on
+    its batch is precisely the run that never gets there — so the name in the
+    instruction resolved to nothing exactly when it was the only way back to the
+    money.
+
+    Behavioral on purpose: the whole CLI runs, and the instruction is taken out
+    of what it printed and fed back to the resolver the next run would use.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR",
+            "GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG",
+            "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN")
+
+    class FakeSource:
+        def list(self):
+            return [{"id": name, "file": f"{name}.png", "hash": name,
+                     "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+                     "url": f"https://example.invalid/{name}",
+                     "trashed": False, "size": 100}
+                    for name in ("a", "b")]
+
+        def fetch(self, _file_id):
+            return b"bytes", "image/png"
+
+    def setUp(self):
+        self.saved_env = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-resume-"))
+        # A space, on purpose: this is what a Windows target looks like, and an
+        # unquoted one reaches argparse as two arguments.
+        self.collection = self.home / "Minhas Fotos"
+        self.collection.mkdir()
+
+        env_file = self.home / "lupa.env"
+        env_file.write_text("GEMINI_API_KEY=abc\n", encoding="utf-8")
+        os.environ["LUPA_ENV"] = str(env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+        self.saved_cli = (cli.build_source, gemini.create_batch, gemini.await_batch)
+        self.real_await = gemini.await_batch
+        cli.build_source = lambda *a, **k: (self.FakeSource(), None)
+        gemini.create_batch = lambda *a, **k: "batches/xyz-789"
+        self.waiting = self.wait_that(kill=False)
+
+    def tearDown(self):
+        cli.build_source, gemini.create_batch, gemini.await_batch = self.saved_cli
+        for key, value in self.saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def wait_that(self, kill):
+        waiting = BatchThatNeverFinishes(self.real_await, kill=kill)
+        gemini.await_batch = waiting
+        return waiting
+
+    def run_lupa(self, *extra):
+        """Runs the CLI over the fake source. Returns everything it printed.
+
+        KeyboardInterrupt is let through the same way the real process lets it
+        through: the run stops where it stood, and whatever command_index would
+        have done afterwards does not happen.
+        """
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+            try:
+                cli.main(["index", str(self.collection), "--yes", "--no-push",
+                          "--no-contact-sheets", *extra])
+            except SystemExit as stop:
+                if stop.code:
+                    printed.write(f"\n{stop.code}\n")
+            except KeyboardInterrupt:
+                pass
+        return printed.getvalue()
+
+    def index_dir(self):
+        return self.home / "indexes" / "minhas-fotos"
+
+    def registry_now(self):
+        """The registry as it stands on disk — what the next command will read."""
+        return config.read_config(file_env=config.environment())
+
+    def resolves(self, message, registry):
+        """Does the printed instruction survive being pasted? Raises if not."""
+        entry = pasted_target(message)
+        try:
+            return cli.resolve_entry(entry, registry)
+        except Exception as error:
+            raise AssertionError(
+                f"the instruction says to run `lupa update {entry} --resume-batch`, "
+                f"and that command dies with:\n  {error}") from None
+
+    def interrupted_run(self):
+        """A run killed while waiting on a batch already paid for.
+
+        This is the state the whole resume machinery exists for: money spent, a
+        receipt on disk, and nothing after it in command_index having run.
+        """
+        self.waiting = self.wait_that(kill=True)
+        printed = self.run_lupa()
+        self.assertIsNotNone(inflight.read(self.index_dir()),
+                             "no receipt was left behind; there is nothing to resume")
+        return printed
+
+    def test_a_killed_run_still_leaves_the_short_name_usable(self):
+        """The short name is what the tool promises. Registering only at the end
+        of a run that finished is what broke that promise for the one run that
+        needed it — the run that died holding a paid batch."""
+        self.interrupted_run()
+        target = cli.resolve_entry("minhas-fotos", self.registry_now())
+        self.assertEqual(self.collection, target.path)
+
+    def test_the_wait_really_timed_out_on_a_paid_batch(self):
+        self.run_lupa()
+        self.assertIn("ALREADY CHARGED", self.waiting.message or "",
+                      "the scenario under test did not happen; the rest proves nothing")
+        self.assertIn("batches/xyz-789", self.waiting.message)
+
+    def test_the_timeout_instruction_can_be_pasted_while_it_is_on_the_screen(self):
+        """The message is printed during the wait — so it is against the registry
+        of that moment, not of some later run, that it has to work."""
+        self.run_lupa()
+        self.resolves(self.waiting.message, self.waiting.registry_while_waiting)
+
+    def test_the_timeout_instruction_reaches_the_screen_whole(self):
+        """The pipeline files a timeout as one failed image among others, and the
+        run report flattens the error to 200 characters — which cut the batch
+        name in half and dropped the resume command off the end entirely. The
+        only copy left was runs/*.errors.jsonl, which nobody is looking at while
+        the terminal is saying the run failed."""
+        printed = self.run_lupa()
+        self.assertIn("batches/xyz-789", printed,
+                      "the batch name — the receipt — never reached the screen")
+        self.resolves(printed, self.waiting.registry_while_waiting)
+
+    def test_the_timeout_instruction_points_at_this_collection(self):
+        self.run_lupa()
+        target = self.resolves(self.waiting.message,
+                               self.waiting.registry_while_waiting)
+        self.assertEqual("minhas-fotos", target.name,
+                         "the instruction resolves, but to another collection")
+
+    def test_the_block_on_the_next_run_can_be_pasted_and_run(self):
+        """After a killed run, the next one refuses to start — a batch is in
+        flight and paid for — and prints its own copy of the instruction."""
+        self.interrupted_run()
+        blocked = self.run_lupa()
+        self.assertIn("ALREADY CHARGED", blocked)
+        self.resolves(blocked, self.registry_now())
+
+    def test_the_dry_run_note_can_be_pasted_and_run(self):
+        self.interrupted_run()
+        noted = self.run_lupa("--dry-run")
+        self.assertIn("in flight", noted)
+        self.resolves(noted, self.registry_now())
+
+    def test_the_instruction_that_was_blocked_actually_resumes_the_batch(self):
+        """End to end: paste it, and the paid batch is collected instead of a
+        second one being bought."""
+        self.interrupted_run()
+        blocked = self.run_lupa()
+        entry = pasted_target(blocked)
+
+        bought = []
+        gemini.create_batch = lambda *a, **k: bought.append(1) or "batches/second"
+        gemini.await_batch = lambda api_key, name, **kw: a_result(["a", "b"])
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+            try:
+                cli.main(["update", entry, "--resume-batch", "--yes", "--no-push",
+                          "--no-contact-sheets"])
+            except SystemExit as stop:
+                if stop.code:
+                    printed.write(f"\n{stop.code}\n")
+
+        self.assertEqual([], bought, "the resume paid for a second batch")
+        self.assertIn("+2 added", printed.getvalue())
 
 
 if __name__ == "__main__":

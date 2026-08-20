@@ -8,11 +8,73 @@ Three reading levels, cheapest first:
 import json
 import os
 import shutil
+import time
 import unicodedata
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+
+# Written explicitly: every artifact here is a text file with LF endings, and
+# atomic_write translates on the way out. A literal in a f-string cannot carry it.
+NEWLINE = chr(10)
+
+# On Windows, os.replace over a destination another handle still holds open
+# fails with PermissionError. The usual culprits — an antivirus scan, the search
+# indexer, a reader in another process — let go within milliseconds, so a few
+# short retries close the window instead of failing a whole run over it.
+REPLACE_ATTEMPTS = 5
+REPLACE_PAUSE = 0.05
+
+
+def replace_when_windows_lets_go(temporary, path):
+    """os.replace, retried while Windows still has the destination open.
+
+    Gives up only when the destination is still not there: if the retries ran
+    out but a complete file has appeared meanwhile (another process won the
+    race), that file is as good as ours and the temporary is simply dropped.
+    """
+    temporary, path = Path(temporary), Path(path)
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                if path.exists():
+                    temporary.unlink(missing_ok=True)
+                    return
+                raise
+            time.sleep(REPLACE_PAUSE * (attempt + 1))
+
+
+@contextmanager
+def writing_atomically(path, suffix=".tmp"):
+    """Yields a temporary path to write, then renames it over `path`.
+
+    Nothing ever observes the destination half-written: it either is the old
+    file or is the new one, because os.replace is atomic. A writer that raises
+    leaves no temporary behind either — an orphan .tmp/.part in a cache that
+    lives for thousands of files is litter that accumulates forever.
+
+    Shared on purpose with the download cache in cli.build_source: the index and
+    the cache need the exact same guarantee, and one of them learning it the
+    hard way is enough.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + suffix)
+    try:
+        yield temporary
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    try:
+        replace_when_windows_lets_go(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def atomic_write(path, text, encoding="utf-8"):
@@ -21,18 +83,11 @@ def atomic_write(path, text, encoding="utf-8"):
     A crash mid-write would otherwise leave a truncated catalog — and a truncated
     catalog costs a full reindex to repair.
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    try:
+    with writing_atomically(path) as temporary:
         with open(temporary, "w", encoding=encoding) as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def tag_filename(tag):
@@ -165,7 +220,18 @@ def _write_manifest(index_dir, collection, items, model, now):
     return manifest
 
 
-def _write_run_report(index_dir, collection, items, summary, cost_usd, model, now):
+def _write_run_report(index_dir, collection, items, summary, cost_usd, model, now,
+                      usage=None, batch=True):
+    """Prose, and the only place a measurement outlives the terminal scrollback.
+
+    usage — a caption.UsageMeter, or None when nothing measured this run. What the
+    API counted is written here next to what was budgeted, so the two can be
+    compared later without having watched the run happen.
+    batch — how the run was billed. Batch is half price, so assuming it either way
+    would halve, or double, a figure whose only purpose is to be exact.
+    """
+    from lupa.caption import usage_lines
+
     folder = index_dir / "runs"
     folder.mkdir(exist_ok=True)
     name = str(now).replace(":", "-")
@@ -177,6 +243,10 @@ Images in collection: {len(items)}
 
 Estimated cost: US$ {cost_usd} · model: {model}
 """
+    measured = usage_lines(usage, estimated_cost=cost_usd, model=model, batch=batch)
+    if measured:
+        section = ["", "## Token usage", ""] + list(measured) + [""]
+        text += NEWLINE.join(section)
     atomic_write(folder / f"{name}.md", text)
 
 
@@ -192,8 +262,15 @@ def _write_search_projection(index_dir, items):
         return  # the flat catalog still answers; the projection is an accelerator
 
 
-def write_index(index_dir, collection, items, summary, model, cost_usd, now):
-    """Writes every index artifact. Idempotent: it rewrites the whole set."""
+def write_index(index_dir, collection, items, summary, model, cost_usd, now,
+                usage=None, batch=True):
+    """Writes every index artifact. Idempotent: it rewrites the whole set.
+
+    usage — optional caption.UsageMeter. Only the run report reads it: the
+    published contract (catalog.jsonl, MANIFEST.json) does not change shape
+    because a run was measured.
+    batch — whether this run was billed at the half-price batch rate.
+    """
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
     items = sorted(items, key=lambda item: item.get("file", ""))
@@ -202,5 +279,6 @@ def write_index(index_dir, collection, items, summary, model, cost_usd, now):
     _write_search_projection(index_dir, items)
     _write_by_tag(index_dir, items)
     _write_index_md(index_dir, collection, items, now, model)
-    _write_run_report(index_dir, collection, items, summary, cost_usd, model, now)
+    _write_run_report(index_dir, collection, items, summary, cost_usd, model, now,
+                      usage=usage, batch=batch)
     return _write_manifest(index_dir, collection, items, model, now)

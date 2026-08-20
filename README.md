@@ -176,7 +176,7 @@ Preflight · collection "if-editorial"
 Plan for this run
   +40 added · ~3 changed · -5 removed · =3364 unchanged
   images to describe: 43
-  estimated cost: under US$ 0.01
+  estimated cost: US$ 0.03
 ```
 
 On a `✗` it stops and spends nothing. Otherwise it shows the plan and asks before
@@ -207,7 +207,7 @@ was always empty. It is no longer written.
 |---|---|
 | `--dry-run` | stop after the plan, spend nothing |
 | `--retry-failed` | describe again the images that failed in earlier runs |
-| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice |
+| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice. The run that lost it prints the whole command to paste, target included |
 | `--no-recursive` | index only the top level |
 | `--no-batch` | one call per image, immediate but twice the price |
 | `--workers N` | parallel describe calls when batch is off (default 8) |
@@ -306,8 +306,11 @@ registers the collection for you.
 ## Cost
 
 Describing a thousand images in batch with Flash-Lite lands in the range of
-**cents**. The arithmetic lives in `lupa/caption.py` and shows up in every
-`--dry-run` before you spend.
+**cents** — US$ 0.58 at the moment, on the default model. The arithmetic lives in
+`lupa/caption.py` and shows up in every `--dry-run` before you spend. Its two
+token budgets are not guesses: they were measured on 2026-08-20 against a real
+run, and `lupa/caption.py` records how, so the estimate can be checked instead of
+believed.
 
 Above 200 new images, the command asks first.
 
