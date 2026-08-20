@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lupa import caption, config, gemini
+from lupa import caption, config, gemini, inflight
 from lupa.guards import IndexAlreadyExists, LockBusy, needs_cost_confirmation
 from lupa.mcp import Server
 from lupa.pipeline import run as run_pipeline
@@ -94,33 +94,72 @@ def make_describer(api_key, model, language):
     return describe
 
 
-def make_batch_describer(api_key, model, language, source, ids, on_progress=print):
+def make_batch_describer(api_key, model, language, source, ids, on_progress=print,
+                         index_dir=None, collection="", resume_batch=None):
     """Half the price: every image goes up in one job, answers come back keyed.
 
     The batch is submitted on the first call and then served from memory, so the
     pipeline keeps its one-image-at-a-time shape without paying per request.
+
+    resume_batch — the name of a batch already submitted and already charged. Given
+    one, nothing is uploaded and nothing is created: the job is only waited on.
     """
     from lupa.classify import classify
 
     state = {"results": None}
+    hint = f"lupa update {collection} --resume-batch" if collection else None
 
     def ensure_submitted(items_by_id):
         if state["results"] is not None:
             return
-        lines = []
-        for file_id in ids:
-            item = items_by_id[file_id]
-            image, mime = source.fetch(file_id)
-            meta = {**item, **classify(item)}
-            prompt = caption.build_prompt(meta, language=language)
-            lines.append(gemini.batch_line(file_id, prompt, image, mime))
 
-        on_progress(f"  submitting {len(lines)} images as one batch job...")
-        job = gemini.create_batch(api_key, lines, model=model)
-        on_progress(f"  batch {job} accepted; waiting (this is the half-price path)")
-        raw = gemini.await_batch(api_key, job,
-                                 on_update=lambda s: on_progress(f"    {s}"))
+        job = resume_batch
+        if job:
+            on_progress(f"  resuming batch {job} — already paid for, "
+                        "not submitting a new one")
+        else:
+            lines = []
+            for file_id in ids:
+                item = items_by_id[file_id]
+                image, mime = source.fetch(file_id)
+                meta = {**item, **classify(item)}
+                prompt = caption.build_prompt(meta, language=language)
+                lines.append(gemini.batch_line(file_id, prompt, image, mime))
+
+            on_progress(f"  submitting {len(lines)} images as one batch job...")
+            job = gemini.create_batch(api_key, lines, model=model)
+            # Charged from here on, and the name is the receipt. It reaches the
+            # screen first — the screen is the user's last resort and must never
+            # depend on a disk — and disk immediately after, so a process killed
+            # one second later is still recoverable.
+            on_progress(f"  batch {job} accepted; waiting (this is the half-price path)")
+            if index_dir is not None:
+                try:
+                    inflight.remember(index_dir, job, collection, model, ids)
+                except Exception as failure:   # full disk, read-only folder, I/O
+                    # The money is already spent, and waiting is the only way to
+                    # collect it. Dying over bookkeeping would throw that away, so
+                    # this says so loudly and then goes on waiting.
+                    on_progress(f"  !! the batch receipt could not be written to "
+                                f"{inflight.record_path(index_dir)}: {failure}")
+                    on_progress("  !! automatic resume will NOT be available for "
+                                "this batch")
+                    on_progress(f"  !! write this name down now, it is the only "
+                                f"copy: {job}")
+
+        try:
+            raw = gemini.await_batch(api_key, job, resume_hint=hint,
+                                     on_update=lambda s: on_progress(f"    {s}"))
+        except gemini.BatchTimeout:
+            raise                       # still running, still resumable: keep the record
+        except gemini.GeminiError:
+            if index_dir is not None:   # ended badly: there is nothing left to resume
+                inflight.forget(index_dir)
+            raise
+
         state["results"] = gemini.read_batch_results(raw)
+        if index_dir is not None:
+            inflight.forget(index_dir)  # consumed: it must not be resumable again
         on_progress(f"  batch returned {len(state['results'])} descriptions")
 
     def describe(item, image, mime):
@@ -132,6 +171,52 @@ def make_batch_describer(api_key, model, language, source, ids, on_progress=prin
 
     describe.items_by_id = {}
     return describe
+
+
+def _settle_inflight_batch(args, index_dir, collection, model, plan):
+    """Reconciles this run with a batch that may already be in flight — and paid.
+
+    Returns the batch name to resume, or None to submit a new one. Exits when the
+    two do not agree.
+
+    A registered batch is money already spent. Running on top of it without
+    --resume-batch would create and pay for a second one, in silence, while the
+    first is still alive; the choice here is therefore block-and-instruct rather
+    than warn-and-continue. Warning is not enough: the run continues by default
+    (and non-interactively there is nobody reading), so the double charge would
+    happen anyway. Blocking costs one aborted command and prints both ways out —
+    resume it, or delete the receipt and give it up on purpose.
+    """
+    record = inflight.read(index_dir)
+
+    if getattr(args, "dry_run", False):
+        if record:
+            print(f"  note: {inflight.describe(record)} is registered as in flight "
+                  f"for this collection — it was already charged.")
+            print(f"  collect it with:  lupa update {collection} --resume-batch\n")
+        return None
+
+    if args.resume_batch and args.no_batch:
+        sys.exit("--resume-batch and --no-batch contradict each other: there is a "
+                 "batch to collect, and --no-batch would pay per image instead.\n")
+
+    if not args.resume_batch:
+        if record:
+            sys.exit(
+                f'\n✋ A batch for "{collection}" is still registered as in flight, '
+                f"and it was ALREADY CHARGED.\n"
+                f"  {inflight.describe(record)}\n"
+                f"  Running now would submit — and pay for — a second one.\n\n"
+                f"  Collect it:            lupa update {collection} --resume-batch\n"
+                f"  Or give it up (the money stays spent, the images get paid for "
+                f"again):\n"
+                f"      delete {inflight.record_path(index_dir)}\n")
+        return None
+
+    try:
+        return inflight.load_for_resume(index_dir, collection, model, plan.to_describe)
+    except inflight.BatchDrift as error:
+        sys.exit(f"\n✋ {error}\n")
 
 
 def command_index(args):
@@ -198,6 +283,10 @@ def command_index(args):
     print(f"  estimated cost: {caption.format_cost(preview['estimated_cost'])}")
     print()
 
+    # Before anything this run might spend: money it may have spent already.
+    model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
+    resume_batch = _settle_inflight_batch(args, index_dir, target.name, model, plan)
+
     if plan.empty:
         print("Nothing changed since the last run. Nothing to do, nothing to pay.\n")
         return
@@ -215,22 +304,26 @@ def command_index(args):
         if input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
             sys.exit("cancelled. nothing was spent.\n")
 
-    model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
     language = env.get("LUPA_LANG") or caption.DEFAULT_LANGUAGE
     api_key = env.get("GEMINI_API_KEY")
     use_batch = str(env.get("LUPA_BATCH", "1")).strip() not in ("0", "false", "no")
+    # A resume is never a per-image run: those answers are already bought and
+    # waiting, and describing again would pay full price for the same images.
+    batch_mode = bool(resume_batch) or (use_batch and not args.no_batch)
 
-    if use_batch and not args.no_batch:
+    if batch_mode:
         remote = {item["id"]: item for item in source.list()}
         describer = make_batch_describer(api_key, model, language, source,
-                                         plan.to_describe)
+                                         plan.to_describe, index_dir=index_dir,
+                                         collection=target.name,
+                                         resume_batch=resume_batch)
         describer.items_by_id = remote
     else:
         describer = make_describer(api_key, model, language)
 
     result = run_pipeline(
         collection=target.name, index_dir=index_dir, source=source,
-        describe=describer, batch=use_batch and not args.no_batch,
+        describe=describer, batch=batch_mode,
         mode="index" if args.rebuild else "update", now=utc_stamp(),
         rebuild=args.rebuild, confirm=args.confirm, model=model,
         contact_sheets=not args.no_contact_sheets, workers=max(1, args.workers))
@@ -342,6 +435,9 @@ def main(argv=None):
                            help="skip the visual curation grids")
         entry.add_argument("--retry-failed", action="store_true",
                            help="describe again the images that failed in earlier runs")
+        entry.add_argument("--resume-batch", action="store_true",
+                           help="collect the batch left in flight by an earlier run "
+                                "instead of submitting (and paying for) a new one")
         entry.add_argument("--workers", type=int, default=8,
                            help="parallel describe calls when not using batch mode")
         entry.add_argument("--yes", "-y", action="store_true", help="do not ask")

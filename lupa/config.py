@@ -23,7 +23,12 @@ ENV_SEARCH_CHAIN = (
 
 SETTINGS = ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG", "LUPA_STATE_DIR",
             "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN",
-            "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES")
+            "LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES",
+            # Prices per 1M tokens, overriding the table in caption.py. Listed here
+            # so a price Google changed is an edit to a settings file rather than a
+            # release of this package — and so the file, not only the process
+            # environment, is read for them.
+            "LUPA_INPUT_PRICE", "LUPA_OUTPUT_PRICE")
 
 
 def first_existing(candidates):

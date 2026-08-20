@@ -200,6 +200,7 @@ generic and often wrong — on a post about prioritization Drive suggested
 |---|---|
 | `--dry-run` | stop after the plan, spend nothing |
 | `--retry-failed` | describe again the images that failed in earlier runs |
+| `--resume-batch` | collect the batch a previous run left in flight — it was already charged, so this collects it instead of paying twice |
 | `--no-recursive` | index only the top level |
 | `--no-batch` | one call per image, immediate but twice the price |
 | `--workers N` | parallel describe calls when batch is off (default 8) |
@@ -281,7 +282,9 @@ LUPA_ENV=./project.env python3 -m lupa status
 |---|---|---|
 | `GEMINI_API_KEY` | — | vision model key (required to index) |
 | `LUPA_LANG` | `en` | language of generated captions and tags (`pt`, `es`, …) |
-| `LUPA_MODEL` | `gemini-2.5-flash-lite` | model used for descriptions |
+| `LUPA_MODEL` | `gemini-3.5-flash-lite` | model used for descriptions |
+| `LUPA_INPUT_PRICE` | from the table in `lupa/caption.py` | input price per 1M tokens, when you need to override the table |
+| `LUPA_OUTPUT_PRICE` | from the table in `lupa/caption.py` | output price per 1M tokens, same idea |
 | `LUPA_BATCH` | `1` | batch mode: half price, asynchronous. `0` forces immediate |
 | `LUPA_CONFIRM_ABOVE` | `200` | ask before describing more images than this |
 | `LUPA_CONFIG` | `~/.lupa/collections.json` | saved collection registry |
@@ -300,6 +303,25 @@ Describing a thousand images in batch with Flash-Lite lands in the range of
 `--dry-run` before you spend.
 
 Above 200 new images, the command asks first.
+
+The price is a table, one row per model, and the preflight report always names
+the model the estimate was computed for and where the number came from:
+
+```
+  ✓ cost estimate: US$ 0.30 in / US$ 2.50 out per 1M tokens for
+    gemini-3.5-flash-lite · from the table for gemini-3.5-flash-lite · batch halves it
+```
+
+Set `LUPA_MODEL` to a model the table has never heard of and the estimate is not
+quoted at all — it says so and tells you how to supply the two prices yourself,
+because a confident number for the wrong model is worse than an admitted blank.
+`LUPA_INPUT_PRICE` and `LUPA_OUTPUT_PRICE` override the table, so a price Google
+changed is one line in your settings file rather than a new release of lupa.
+
+Google retires models. When one goes, the API answers every single image with the
+same 404 — and lupa reads that answer, names the successor Google itself suggests,
+and tells you to put it in `LUPA_MODEL`, instead of printing a bare HTTP error a
+few hundred times.
 
 Two things keep that number honest: the model receives a 768px thumbnail rather
 than the original, and the whole run goes up as one batch job at half price. Pass

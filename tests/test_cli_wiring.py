@@ -58,6 +58,25 @@ class TestSettingsOverride(unittest.TestCase):
                         "--env must be applied before a command reads configuration")
 
 
+class TestResumeBatchIsDeclaredForBothVerbs(unittest.TestCase):
+    """A batch already paid for can only be resumed if the flag exists on the
+    verb the user actually types — and `index` and `update` are the same door."""
+
+    def test_the_flag_is_declared(self):
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn('"--resume-batch"', source)
+
+    def test_it_is_declared_in_the_loop_shared_by_index_and_update(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        loops = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+                 and [getattr(element, "value", None) for element in node.iter.elts]
+                 == ["index", "update"]]
+        self.assertTrue(loops, "the shared verb loop disappeared from cli.py")
+        self.assertIn("--resume-batch", ast.unparse(loops[0]),
+                      "--resume-batch must reach `update` too, not only `index`")
+
+
 class TestOAuthTokenReachesDrive(unittest.TestCase):
     """The value the CLI hands to drive.connect, and the one preflight inspects,
     must be the same and must never be None.

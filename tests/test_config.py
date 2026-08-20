@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from lupa.config import (read_env, find_collection, register_collection,
-                         target_from_registry, resolve_index_root)
+                         target_from_registry, resolve_index_root, SETTINGS)
 from lupa.target import Target
 
 
@@ -270,3 +270,12 @@ class TestOAuthToken(unittest.TestCase):
         os.environ["LUPA_OAUTH_TOKEN"] = "/from/the/process.json"
         self.assertEqual(Path(environment()["LUPA_OAUTH_TOKEN"]),
                          Path("/from/the/process.json"))
+
+
+class TestPriceOverridesAreReadFromTheFile(unittest.TestCase):
+    """A setting missing from SETTINGS is read from the process environment only —
+    which is exactly the half nobody notices until the .env is ignored."""
+
+    def test_the_price_overrides_are_settings(self):
+        self.assertIn("LUPA_INPUT_PRICE", SETTINGS)
+        self.assertIn("LUPA_OUTPUT_PRICE", SETTINGS)

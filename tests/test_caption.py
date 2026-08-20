@@ -1,7 +1,8 @@
 """Vision description: prompt, parsing, and the merge with what was already free."""
 import unittest
 from lupa.caption import (build_prompt, parse_response, merge, estimate_cost,
-                          format_cost, InvalidResponse)
+                          format_cost, InvalidResponse, MODEL_PRICES, resolve_pricing)
+from lupa.gemini import DEFAULT_MODEL
 
 PHOTO_META = {"file": "table.jpg", "kind": "photo", "medium": "na", "source": "camera",
               "has_text": False, "aspect": "3:2", "orientation": "landscape",
@@ -114,3 +115,99 @@ class TestCostFormatting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPriceTable(unittest.TestCase):
+    """A price per model, and the arithmetic pinned to a literal per model.
+
+    The bug this guards is not a crash: it is a number quoted with confidence for
+    the wrong model. Every row carries its expected cost per image written out, so
+    editing a price without meaning to breaks a test instead of a bill.
+    """
+
+    # cost of ONE image, synchronous, at 600 input + 200 output tokens.
+    PER_IMAGE = {
+        "gemini-2.5-flash-lite": 0.00014,   # 600·$0.10/1M + 200·$0.40/1M
+        "gemini-3.5-flash-lite": 0.00068,   # 600·$0.30/1M + 200·$2.50/1M
+    }
+
+    def test_every_model_in_the_table_has_its_cost_pinned(self):
+        self.assertEqual(set(MODEL_PRICES), set(self.PER_IMAGE),
+                         "a model was added to the table with no expected cost pinned")
+
+    def test_each_model_costs_exactly_what_is_written_here(self):
+        for model, expected in self.PER_IMAGE.items():
+            with self.subTest(model=model):
+                self.assertEqual(estimate_cost(1, batch=False, model=model), expected)
+
+    def test_batch_is_still_exactly_half(self):
+        for model in self.PER_IMAGE:
+            with self.subTest(model=model):
+                self.assertEqual(estimate_cost(1000, batch=True, model=model),
+                                 estimate_cost(1000, batch=False, model=model) / 2)
+
+    def test_the_retired_model_still_prices_exactly_as_it_always_did(self):
+        # 0.07 batch / 0.14 synchronous per thousand: the numbers this repo shipped.
+        self.assertEqual(estimate_cost(1000, batch=True,
+                                       model="gemini-2.5-flash-lite"), 0.07)
+        self.assertEqual(estimate_cost(1000, batch=False,
+                                       model="gemini-2.5-flash-lite"), 0.14)
+
+    def test_the_default_model_is_priced_from_the_table(self):
+        pricing = resolve_pricing(DEFAULT_MODEL)
+        self.assertTrue(pricing.known)
+        self.assertIn(DEFAULT_MODEL, pricing.origin)
+
+    def test_a_model_outside_the_table_gets_no_number_at_all(self):
+        self.assertIsNone(estimate_cost(1000, model="gemini-9-imagined"))
+        self.assertFalse(resolve_pricing("gemini-9-imagined").known)
+
+    def test_an_unpriceable_estimate_reads_as_unknown_not_as_zero(self):
+        self.assertIn("unknown", format_cost(None).lower())
+        self.assertEqual(format_cost(0.0), "US$ 0.00")
+
+
+class TestPriceFromTheEnvironment(unittest.TestCase):
+    """The number lives in the env so that fixing it is not a code change."""
+
+    def test_the_env_overrides_the_table(self):
+        pricing = resolve_pricing("gemini-2.5-flash-lite",
+                                  {"LUPA_INPUT_PRICE": "1.00", "LUPA_OUTPUT_PRICE": "2.00"})
+        self.assertEqual((pricing.input_price, pricing.output_price), (1.0, 2.0))
+
+    def test_the_env_can_price_a_model_the_table_never_heard_of(self):
+        pricing = resolve_pricing("gemini-9-imagined",
+                                  {"LUPA_INPUT_PRICE": "0.5", "LUPA_OUTPUT_PRICE": "1.5"})
+        self.assertTrue(pricing.known)
+        self.assertEqual(estimate_cost(1000, batch=False, model="gemini-9-imagined",
+                                       env={"LUPA_INPUT_PRICE": "0.5",
+                                            "LUPA_OUTPUT_PRICE": "1.5"}), 0.6)
+
+    def test_the_origin_says_the_env_overrode_the_table(self):
+        pricing = resolve_pricing("gemini-2.5-flash-lite", {"LUPA_INPUT_PRICE": "1.00"})
+        self.assertIn("LUPA_INPUT_PRICE", pricing.origin)
+
+    def test_junk_in_the_env_does_not_take_the_run_down(self):
+        pricing = resolve_pricing("gemini-2.5-flash-lite",
+                                  {"LUPA_INPUT_PRICE": "cheap", "LUPA_OUTPUT_PRICE": "-3"})
+        self.assertEqual((pricing.input_price, pricing.output_price), (0.10, 0.40))
+        self.assertTrue(pricing.complaints, "a rejected value must be said out loud")
+        self.assertIn("LUPA_INPUT_PRICE", " ".join(pricing.complaints))
+        self.assertIn("LUPA_OUTPUT_PRICE", " ".join(pricing.complaints))
+
+    def test_junk_in_the_env_with_no_table_to_fall_back_on_is_unknown(self):
+        pricing = resolve_pricing("gemini-9-imagined", {"LUPA_INPUT_PRICE": "cheap"})
+        self.assertFalse(pricing.known)
+
+    def test_an_empty_value_is_simply_absent(self):
+        pricing = resolve_pricing("gemini-2.5-flash-lite", {"LUPA_INPUT_PRICE": ""})
+        self.assertEqual(pricing.input_price, 0.10)
+        self.assertFalse(pricing.complaints)
+
+    def test_free_is_a_legitimate_price(self):
+        pricing = resolve_pricing("gemini-9-imagined",
+                                  {"LUPA_INPUT_PRICE": "0", "LUPA_OUTPUT_PRICE": "0"})
+        self.assertTrue(pricing.known)
+        self.assertEqual(estimate_cost(1000, model="gemini-9-imagined",
+                                       env={"LUPA_INPUT_PRICE": "0",
+                                            "LUPA_OUTPUT_PRICE": "0"}), 0.0)

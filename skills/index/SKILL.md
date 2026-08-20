@@ -64,6 +64,7 @@ To run unattended: `--yes` — but only after you have read the plan.
 | flag | when to reach for it |
 |---|---|
 | `--retry-failed` | the last run reported failures and the user wants them described |
+| `--resume-batch` | a previous run died waiting on its batch; lupa refuses to start until that batch is collected or given up |
 | `--no-recursive` | the user explicitly wants only the top folder |
 | `--no-batch` | the user needs the index now and accepts paying twice as much |
 | `--workers N` | tuning parallelism when batch is off (default 8) |
