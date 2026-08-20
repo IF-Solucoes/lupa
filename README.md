@@ -84,28 +84,42 @@ informed, not mandatory.
 
 ## Install
 
-### In Claude Code — the full plugin
+Cowork and Code both install this as a plugin, from the same repository.
+
+### Add the marketplace, then install
+
+**In Claude Code:**
 
 ```bash
 /plugin marketplace add IF-Solucoes/lupa
 /plugin install lupa@lupa
 ```
 
-That brings the three skills and the MCP server (`lupa_search`, `lupa_status`),
-which Claude Code starts on its own. The server has no dependencies beyond the
-Python standard library.
+**In Claude Cowork:** Customize → Plugins → **Add marketplace** → `IF-Solucoes/lupa`,
+then install it from the list.
 
-### In Claude Cowork or claude.ai — the reading face
+Either way you get the three skills and the MCP server (`lupa_search`,
+`lupa_status`), which the client starts on its own. The server has no dependencies
+beyond the Python standard library.
 
-Cowork installs skills as a zip, not as a plugin, so that face ships separately:
+### Or upload the package
 
-1. download [`dist/lupa-cowork.zip`](dist/lupa-cowork.zip) from this repository
-2. in Claude: **Settings → Capabilities → Skills → +** and upload the zip
+Cowork's Plugins page also accepts a plugin as a file — useful behind a proxy, for
+an offline install, or when a marketplace refresh misbehaves. Download
+[`dist/lupa.zip`](dist/lupa.zip) and upload it. Rebuild it after changing the
+plugin with `python3 scripts/build_plugin_package.py`.
 
-It teaches the agent to read an index that already exists in Drive, through the
-connector. It executes nothing and cannot index — indexing lives in Claude Code.
-Rebuild the zip after editing the skill with
-`python3 scripts/build_cowork_skill.py`.
+### Which face runs where
+
+| | Claude Code | Cowork / claude.ai |
+|---|---|---|
+| `lupa-index` | indexes collections | — indexing needs local execution |
+| `lupa-search` | queries through the MCP | — |
+| `lupa-cowork` | — | reads the `_lupa/` index through the Drive connector |
+
+Indexing lives in Code because it downloads images, calls Gemini and writes files.
+Cowork reads the index that Code produced, which is the whole point of keeping the
+index as plain files inside the collection.
 
 ### From source
 

@@ -57,6 +57,12 @@ Return a handful of candidates — five to ten — with **file name, short capti
 Drive link**. Say why each one made the list. If nothing matches, report the
 vocabulary the collection actually has rather than inventing synonyms.
 
+## Where this face comes from
+
+This skill arrives with the lupa plugin — the same package Claude Code installs.
+Nothing about the index differs between the two; what differs is that here you
+read it, and there it is produced.
+
 ## Limits of this face
 
 - **You cannot index here.** If the index is stale or absent, tell the user: creating
