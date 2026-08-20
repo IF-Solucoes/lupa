@@ -329,9 +329,15 @@ def command_index(args):
         contact_sheets=not args.no_contact_sheets, workers=max(1, args.workers))
 
     print()
-    print(f"Done. {result['plan'].summary()}")
+    # A total failure is a headline, not a footnote: it goes before everything
+    # else, and it takes the word "Done." with it. Reading only the first line has
+    # to be enough to know the run did not work.
+    if result["verdict"]:
+        print(result["verdict"])
+    else:
+        print(f"Done. {result['summary']}")
     print(f"  local index: {index_dir}")
-    if result["failures"]:
+    if result["failures"] and not result["verdict"]:
         print(f"  {len(result['failures'])} images failed — see runs/*.errors.jsonl")
     sheets = result.get("contact_sheets") or {}
     if sheets.get("sheets"):
@@ -347,6 +353,12 @@ def command_index(args):
         publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
 
     _clear_cache(root / ".cache" / target.name)
+
+    # Last, once everything that could be reported has been: a run with failures
+    # is a failed run. Exiting 0 is what let `lupa index && lupa publish` publish
+    # an index of 875 images that were never described.
+    if result["failures"]:
+        raise SystemExit(1)
 
 
 def _clear_cache(path):

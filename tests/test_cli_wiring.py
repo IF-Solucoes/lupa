@@ -311,3 +311,140 @@ class TestCosmeticProbeNeverLogsIn(unittest.TestCase):
         self.assertEqual(Path(self.token), seen.get("token"))
         self.assertIn("referencias-editorial", printed,
                       "the Drive name stopped reaching the collection name")
+
+
+class TestTheExitCodeTellsTheTruth(unittest.TestCase):
+    """A failed run must be detectable by a script, not only by a careful reader.
+
+    Regression, 2026-08-20: 875 of 875 images failed with the same HTTP 404 and
+    `lupa index` printed "Done." on the first line, "875 images failed" on the
+    last, and exited 0 — so `lupa index && lupa publish` published nothing.
+
+    Behavioral on purpose: an exit code is only observable by running the command.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR",
+            "GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG",
+            "LUPA_CONFIRM_ABOVE", "LUPA_OAUTH_CLIENT", "LUPA_OAUTH_TOKEN")
+
+    RETIRED = ("HTTP 404: gemini-2.5-flash-lite is no longer available; "
+               "use gemini-3.5-flash-lite instead")
+
+    class FakeSource:
+        """Two images, no network, no credentials."""
+
+        def list(self):
+            return [{"id": name, "file": f"{name}.png", "hash": name,
+                     "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+                     "ocr_text": "", "labels": [],
+                     "url": f"https://example.invalid/{name}",
+                     "trashed": False, "size": 100}
+                    for name in ("a", "b")]
+
+        def fetch(self, file_id):
+            return b"bytes", "image/png"
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-exit-"))
+        self.collection = self.home / "photos"
+        self.collection.mkdir()
+
+        env_file = self.home / "lupa.env"
+        env_file.write_text("GEMINI_API_KEY=abc\n", encoding="utf-8")
+        os.environ["LUPA_ENV"] = str(env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+    def tearDown(self):
+        import os
+        import shutil
+
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def run_index(self, describe, *extra):
+        """Runs `lupa index` over the fake source. Returns (exit code, output)."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        source = self.FakeSource()
+        original_source, original_describer = cli.build_source, cli.make_describer
+        cli.build_source = lambda *a, **k: (source, None)
+        cli.make_describer = lambda *a, **k: describe
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["index", str(self.collection), "--yes", "--no-push",
+                              "--no-batch", "--no-contact-sheets", *extra])
+                except SystemExit as stop:
+                    code = stop.code if isinstance(stop.code, int) else 1
+        finally:
+            cli.build_source, cli.make_describer = original_source, original_describer
+        return code, printed.getvalue()
+
+    def working_model(self):
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def broken_model(self, only=None):
+        def describe(item, image, mime):
+            if only is None or item["id"] == only:
+                raise RuntimeError(self.RETIRED)
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def test_a_total_failure_does_not_exit_zero(self):
+        code, _ = self.run_index(self.broken_model())
+        self.assertNotEqual(0, code)
+
+    def test_a_single_failure_is_enough_to_change_the_exit_code(self):
+        code, _ = self.run_index(self.broken_model(only="b"))
+        self.assertNotEqual(0, code)
+
+    def test_a_total_failure_never_says_done(self):
+        _, printed = self.run_index(self.broken_model())
+        self.assertNotIn("Done.", printed)
+
+    def test_a_total_failure_speaks_before_it_reports_anything_else(self):
+        _, printed = self.run_index(self.broken_model())
+        lines = [line for line in printed.splitlines() if line.strip()]
+        verdict = next(i for i, line in enumerate(lines) if "failed" in line.lower())
+        location = next(i for i, line in enumerate(lines) if "local index:" in line)
+        self.assertLess(verdict, location,
+                        "the failure must be read before anything else in the report")
+
+    def test_a_total_failure_names_the_error_that_repeated(self):
+        _, printed = self.run_index(self.broken_model())
+        self.assertIn("no longer available", printed)
+
+    def test_nothing_that_failed_is_counted_as_added(self):
+        """The plan may promise 2; the result must report the 1 that happened."""
+        _, printed = self.run_index(self.broken_model(only="b"))
+        done = next(line for line in printed.splitlines() if line.startswith("Done."))
+        self.assertIn("+1 added", done)
+        self.assertNotIn("+2 added", done)
+        self.assertIn("!1 failed", done)
+
+    def test_a_healthy_run_still_exits_zero_and_still_says_done(self):
+        code, printed = self.run_index(self.working_model())
+        self.assertEqual(0, code)
+        self.assertIn("Done. +2 added · ~0 changed · -0 removed · =0 unchanged",
+                      printed)
+
+    def test_a_dry_run_still_exits_zero(self):
+        code, printed = self.run_index(self.broken_model(), "--dry-run")
+        self.assertEqual(0, code)
+        self.assertIn("--dry-run", printed)
