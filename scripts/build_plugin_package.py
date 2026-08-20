@@ -12,6 +12,15 @@ import sys
 import zipfile
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# The build runs on the same cp1252 console that used to kill `lupa index`, and
+# the last line printed below carries an arrow. The runtime already knows how to
+# survive that; borrowing its helper keeps the answer in one place.
+from lupa.cli import prepare_output_streams  # noqa: E402
+
 FOLDER = "lupa"
 
 # What a running plugin needs: the manifest, the skills, the MCP server and the
@@ -64,7 +73,9 @@ def build(repo_root, destination=None):
 
 
 def main():
-    repo_root = Path(__file__).resolve().parent.parent
+    prepare_output_streams()
+
+    repo_root = REPO_ROOT
     written = build(repo_root)
     with zipfile.ZipFile(written) as archive:
         count = len(archive.namelist())
