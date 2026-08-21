@@ -17,6 +17,12 @@ BASE = "https://generativelanguage.googleapis.com/v1beta"
 # the price table below could never keep up with it.
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
+# The longest a run is allowed to wait on a batch. Named rather than buried in a
+# default argument because it is not only await_batch's business: the index lock
+# has to outlast it, and lupa.guards derives its own ceiling from this one so the
+# two cannot drift apart again.
+BATCH_TIMEOUT_S = 3 * 3600
+
 
 # What the timeout message says when the caller gave it no command to print.
 # It names the target the person typed, never "<collection>": a collection only
@@ -356,7 +362,7 @@ def create_batch(api_key, jsonl_lines, model=DEFAULT_MODEL, name="lupa-batch"):
     return response.get("name") or response.get("metadata", {}).get("name")
 
 
-def await_batch(api_key, batch_name, interval=20, timeout_s=3 * 3600, on_update=None,
+def await_batch(api_key, batch_name, interval=20, timeout_s=BATCH_TIMEOUT_S, on_update=None,
                 resume_hint=None):
     """Waits for the batch to finish. Returns the raw results JSONL.
 

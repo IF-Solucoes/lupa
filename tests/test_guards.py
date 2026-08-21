@@ -2,6 +2,7 @@
 import io
 import json
 import contextlib
+import shutil
 import subprocess
 import sys
 import time
@@ -207,3 +208,74 @@ class TestLock(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheLockOutlivesTheLongestLegitimateRun(unittest.TestCase):
+    """A lock must not expire while its owner is doing exactly what it should.
+
+    MAX_LOCK_AGE_S was half an hour, guessed. A batch run waits on Gemini for up
+    to BATCH_TIMEOUT_S — three hours — so from minute thirty onward a run that
+    was working perfectly had its lock reclaimed out from under it, and a second
+    run was free to walk into the index it was writing.
+
+    The two numbers were written in different files by different hands and never
+    compared. The lock's lifetime is not a preference: it is a consequence of the
+    longest thing a run is allowed to do, so it is derived from it now.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.notices = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_it_outlasts_the_batch_it_is_protecting(self):
+        from lupa.gemini import BATCH_TIMEOUT_S
+        self.assertGreater(
+            MAX_LOCK_AGE_S, BATCH_TIMEOUT_S,
+            "the lock expires before the batch it is supposed to protect")
+
+    @contextlib.contextmanager
+    def owner_that_is_really_alive(self):
+        """Holds the liveness check True so the age rule is what gets tested.
+
+        `owner_is_alive` also refuses a pid whose process started AFTER the lock
+        did, which is how a recycled pid is caught — and it means this process
+        cannot honestly pretend to have held a lock for an hour. Stubbing it is
+        the only way to reach the age branch, and the age branch is the defect.
+        """
+        import lupa.guards as guards
+        original = guards.owner_is_alive
+        guards.owner_is_alive = lambda pid, started: True
+        try:
+            yield
+        finally:
+            guards.owner_is_alive = original
+
+    def write_lock(self, age_s):
+        (self.dir / ".lock").write_text(
+            json.dumps({"pid": os.getpid(), "started": time.time() - age_s}),
+            encoding="utf-8")
+
+    def test_a_live_run_waiting_on_a_batch_keeps_its_lock(self):
+        """Behavioural: the exact window the old half-hour limit got wrong."""
+        from lupa.gemini import BATCH_TIMEOUT_S
+        from lupa.guards import LockBusy
+
+        self.assertLess(3600, BATCH_TIMEOUT_S, "fixture no longer inside a batch wait")
+        self.write_lock(3600)
+        with self.owner_that_is_really_alive():
+            with self.assertRaises(LockBusy):
+                with Lock(self.dir, on_notice=self.notices.append):
+                    pass
+
+    def test_a_run_older_than_any_legitimate_one_is_still_reclaimed(self):
+        """Anti-tautology: the ceiling still exists, it just moved to the right
+        place. Same stub, opposite verdict — which is what proves the stub is not
+        the thing deciding the outcome."""
+        self.write_lock(MAX_LOCK_AGE_S + 60)
+        with self.owner_that_is_really_alive():
+            with Lock(self.dir, on_notice=self.notices.append):
+                pass
+        self.assertTrue(any("limit" in line for line in self.notices), self.notices)
