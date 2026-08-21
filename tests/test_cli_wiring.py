@@ -813,3 +813,78 @@ class TestRebuildAndTheOtherRecoveryFlags(IndexCommandHarness):
                                        "--confirm", "photos", "--resume-batch")
         self.assertNotEqual(0, code)
         self.assertIn("changed since that batch was submitted", printed)
+
+
+class TestAFailedRunDoesNotPublish(IndexCommandHarness):
+    """Publishing is how a run leaves the machine. A failed run must not.
+
+    Regression, 2026-08-20: `command_index` calls `publish()` and only then
+    raises SystemExit(1). The exit code was fixed; the order was not. So a run
+    where every image failed still pushed the index to the client's Drive —
+    overwriting a good index with an empty one — and only afterwards admitted
+    it had failed. The exit code is read by the next command; publish already
+    happened by then.
+    """
+
+    def working_model(self):
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def broken_model(self, only=None):
+        def describe(item, image, mime):
+            if only is None or item["id"] == only:
+                raise RuntimeError("HTTP 404: model is no longer available")
+            return {"caption": "ok", "tags": ["t"]}
+        return describe
+
+    def run_index_pushing(self, describe):
+        """Runs `lupa index` with a Drive service attached and push enabled.
+
+        Returns (exit code, number of publish calls).
+        """
+        import contextlib
+        import io
+
+        import lupa.publish
+        from lupa import cli
+
+        source = self.FakeSource()
+        calls = []
+        original_source = cli.build_source
+        original_describer = cli.make_describer
+        original_publish = lupa.publish.publish
+        cli.build_source = lambda *a, **k: (source, object())
+        cli.make_describer = lambda *a, **k: describe
+        lupa.publish.publish = lambda *a, **k: calls.append(a)
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["index", str(self.collection), "--yes",
+                              "--no-contact-sheets", "--no-batch"])
+                except SystemExit as stop:
+                    code = stop.code or 0 if isinstance(stop.code, (int, type(None))) else 1
+        finally:
+            cli.build_source, cli.make_describer = original_source, original_describer
+            lupa.publish.publish = original_publish
+        return code, len(calls)
+
+    def test_a_healthy_run_still_publishes(self):
+        """Anti-tautology: proves the stub sees the call it is meant to count."""
+        code, published = self.run_index_pushing(self.working_model())
+        self.assertEqual(0, code)
+        self.assertEqual(1, published, "a good run stopped publishing")
+
+    def test_a_total_failure_publishes_nothing(self):
+        code, published = self.run_index_pushing(self.broken_model())
+        self.assertNotEqual(0, code)
+        self.assertEqual(0, published,
+                         "a run where every image failed pushed itself to Drive")
+
+    def test_a_single_failure_is_enough_to_hold_the_publish_back(self):
+        code, published = self.run_index_pushing(self.broken_model(only="b"))
+        self.assertNotEqual(0, code)
+        self.assertEqual(0, published,
+                         "a partial index was published as if it were complete")

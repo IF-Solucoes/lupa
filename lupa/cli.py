@@ -632,9 +632,20 @@ def command_index(args):
         for line in measured:
             print(line)
 
+    # Publishing is how a run leaves the machine, and it is the one step that
+    # touches somebody else's Drive. The exit code below says the run failed, but
+    # it is only read by whatever comes next — by then the push already happened,
+    # and an index with holes has overwritten one that had none. So the failure
+    # holds the push back here, where it can still be held.
     if service and not args.no_push:
-        from lupa.publish import publish
-        publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
+        if result["failures"]:
+            print()
+            print(f"  not published: {len(result['failures'])} images failed, "
+                  "and a partial index must not overwrite the one on Drive.")
+            print(f"    lupa index {args.target} --retry-failed")
+        else:
+            from lupa.publish import publish
+            publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
 
     _clear_cache(root / ".cache" / target.name)
 
