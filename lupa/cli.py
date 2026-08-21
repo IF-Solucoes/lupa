@@ -165,12 +165,26 @@ def build_source(target, env, cache, recursive=True):
             # fallback, and even then the bytes get downscaled before they cost tokens.
             link = self.thumbnails.get(file_id)
             if link:
-                try:
-                    data = fetch_thumbnail(credentials, link)
+                # Cached on disk beside the originals, for the same reason they
+                # are: in batch mode the same file_id is asked for twice — once
+                # by the assembly loop building the request, once by the pipeline
+                # worker that wants bytes for the local thumbnail. Only the full
+                # download had a cache, so the cheap path was the one crossing
+                # the network twice per image, 875 times over on the first real
+                # archive. Same lock and same atomic rename as below: a torn read
+                # here is a truncated image that gets paid for and looks fine.
+                thumb = Path(cache) / f"{file_id}.thumb"
+                with self.downloading(file_id):
+                    if thumb.exists():
+                        return thumb.read_bytes(), "image/jpeg"
+                    try:
+                        data = fetch_thumbnail(credentials, link)
+                    except Exception:
+                        data = None
                     if data:
+                        with writing_atomically(thumb, suffix=".part") as partial:
+                            Path(partial).write_bytes(data)
                         return data, "image/jpeg"
-                except Exception:
-                    pass
 
             local = Path(cache) / file_id
             with self.downloading(file_id):

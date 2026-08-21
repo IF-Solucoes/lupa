@@ -253,3 +253,76 @@ class TestAFailedDownloadLeavesNothingBehind(CacheTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheThumbnailIsFetchedOncePerImage(CacheTestCase):
+    """The cheap path had no cache, so batch mode paid for it twice.
+
+    `fetch` prefers the thumbnail Google already made. In batch mode the same
+    file_id arrives from two paths — the batch assembly loop, which builds the
+    request, and the pipeline worker, which wants bytes for the local thumbnail.
+    The full-download path below has held a disk cache all along; the thumbnail
+    path sat above it with nothing, so every image crossed the network twice.
+
+    Bandwidth, not money: the model is charged once either way. On the first
+    client archive it was 875 images downloaded twice over a domestic link.
+    """
+
+    LINK = "https://example.invalid/thumbnail"
+
+    class CountingThumbnail:
+        def __init__(self, payload=PAYLOAD):
+            self.payload = payload
+            self.calls = 0
+
+        def __call__(self, credentials, link, size=None):
+            self.calls += 1
+            return self.payload
+
+    def a_source_with_a_thumbnail(self, thumb):
+        lupa.drive.fetch_thumbnail = thumb
+        source = self.a_source()
+        source.thumbnails = {FILE_ID: self.LINK}
+        return source
+
+    def test_the_second_fetch_does_not_cross_the_network(self):
+        thumb = self.CountingThumbnail()
+        source = self.a_source_with_a_thumbnail(thumb)
+        source.fetch(FILE_ID)
+        source.fetch(FILE_ID)
+        self.assertEqual(1, thumb.calls,
+                         "the same image was pulled from Drive twice")
+
+    def test_both_fetches_return_the_same_bytes(self):
+        """Anti-tautology: a cache that serves the wrong bytes is worse than none."""
+        thumb = self.CountingThumbnail()
+        source = self.a_source_with_a_thumbnail(thumb)
+        first, first_mime = source.fetch(FILE_ID)
+        second, second_mime = source.fetch(FILE_ID)
+        self.assertEqual(PAYLOAD, first)
+        self.assertEqual(first, second)
+        self.assertEqual(first_mime, second_mime)
+
+    def test_a_thumbnail_that_fails_still_falls_through_to_the_download(self):
+        """The cheap path is an optimisation, never a requirement."""
+        def broken(credentials, link, size=None):
+            raise RuntimeError("no thumbnail today")
+
+        # Before build_source: it binds `download` by value when it is called,
+        # so a stand-in installed afterwards never reaches the source.
+        lupa.drive.download = SlowDownload()
+        source = self.a_source_with_a_thumbnail(broken)
+        data, _ = source.fetch(FILE_ID)
+        self.assertEqual(PAYLOAD, data)
+
+    def test_two_threads_asking_at_once_fetch_it_once(self):
+        """The batch loop and the pipeline worker, arriving together."""
+        thumb = self.CountingThumbnail()
+        source = self.a_source_with_a_thumbnail(thumb)
+        answers, errors = {}, []
+        first = self.fetching(source, answers, errors, "a")
+        second = self.fetching(source, answers, errors, "b")
+        first.start(), second.start()
+        first.join(), second.join()
+        self.assertEqual([], errors)
+        self.assertEqual(1, thumb.calls, "both threads crossed the network")
