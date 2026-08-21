@@ -9,7 +9,20 @@ import sys
 import time
 from pathlib import Path
 
-MAX_LOCK_AGE_S = 30 * 60  # half an hour: past that, the lock owner is gone
+from lupa.gemini import BATCH_TIMEOUT_S
+
+# How long a lock is believed. Not a preference — a consequence: it has to
+# outlast the longest thing a run is allowed to legitimately do, which is waiting
+# on a Gemini batch. It used to be half an hour, guessed, while a batch run may
+# wait three; from minute thirty onward a run doing exactly what it should had
+# its lock reclaimed and a second run was free to walk into the index it was
+# writing. The two numbers lived in different files and were never compared.
+#
+# The margin covers what happens around the wait — the upload before it and the
+# writing after. Erring long is the cheap direction: reclaiming too early means
+# two runs scrambling an index somebody paid for, while reclaiming too late
+# means a wait, and a message that says which file to delete.
+MAX_LOCK_AGE_S = BATCH_TIMEOUT_S + 30 * 60
 
 # A lock is a claim staked by a process. There are two ways that claim goes void:
 # the process is gone, or it has held the lock too long to still be believed.
