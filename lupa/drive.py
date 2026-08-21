@@ -270,9 +270,25 @@ def folder_name(service, folder_id):
     return info.get("name") or folder_id
 
 
+def _quoted(value):
+    """One value, quoted for a Drive query. A name is somebody else's input.
+
+    Publishing the CVN index died on HTTP 400 at `atrium-d'argent.md`, an
+    entity page named after a real client: the apostrophe closed the literal
+    and the rest of the name became syntax. Every by-entity and by-tag page is
+    named from the archive's own vocabulary, so the archive decides whether
+    publish works.
+
+    The backslash is escaped first, or the one added for the quote would
+    itself be escaped a second time.
+    """
+    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{text}'"
+
+
 def ensure_folder(service, parent_id, name):
     """Finds (or creates) a subfolder. This is how _lupa/ is born inside a collection."""
-    query = (f"'{parent_id}' in parents and name = '{name}' and "
+    query = (f"'{parent_id}' in parents and name = {_quoted(name)} and "
              f"mimeType = 'application/vnd.google-apps.folder' and trashed = false")
     found = service.files().list(q=query, fields="files(id)",
                                  supportsAllDrives=True).execute()
@@ -295,7 +311,7 @@ def upload_file(service, folder_id, local_path, remote_name=None):
     name = remote_name or local_path.name
     media = MediaFileUpload(str(local_path), resumable=False)
 
-    query = f"'{folder_id}' in parents and name = '{name}' and trashed = false"
+    query = f"'{folder_id}' in parents and name = {_quoted(name)} and trashed = false"
     existing = service.files().list(q=query, fields="files(id)",
                                     supportsAllDrives=True).execute()
     if existing.get("files"):

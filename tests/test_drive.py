@@ -326,3 +326,64 @@ class TestWalkEntries(unittest.TestCase):
                    "b": [("a", "A", MixedDriveService.FOLDER)]}
         self.assertEqual(sorted(dict(walk_entries(MixedDriveService(looping), "a"))),
                          ["", "B/"])
+
+
+class RecordingService:
+    """Records every query it is asked, and answers "nothing found"."""
+
+    def __init__(self):
+        self.queries = []
+
+    def files(self):
+        return self
+
+    def list(self, q=None, **_):
+        self.queries.append(q)
+        return FakeRequest({"files": []})
+
+    def create(self, **_):
+        return FakeRequest({"id": "created"})
+
+
+class TestANameWithAnApostropheDoesNotBreakTheQuery(unittest.TestCase):
+    """A Drive query is a string language, and a file name is somebody's input.
+
+    Regression, 2026-08-20: publishing the CVN index died on HTTP 400 at
+    `atrium-d'argent.md`, an entity page named after a real client. The
+    apostrophe closed the literal in `name = '{name}'` and the rest of the name
+    became syntax. Every by-entity and by-tag page is named from the archive's
+    own vocabulary, so the archive itself decides whether publish works — and
+    one apostrophe stopped 706 files from reaching the client.
+    """
+
+    NAME = "atrium-d'argent.md"
+    ESCAPED = chr(92) + "'"      # what Drive expects: a backslash, then a quote
+
+    def test_ensure_folder_escapes_it(self):
+        from lupa.drive import ensure_folder
+        service = RecordingService()
+        ensure_folder(service, "PARENT", "Bar d'Or")
+        self.assertIn(self.ESCAPED, service.queries[0],
+                      "the apostrophe reached the query unescaped")
+
+    def test_upload_file_escapes_it(self):
+        import tempfile
+        from pathlib import Path
+
+        from lupa.drive import upload_file
+
+        service = RecordingService()
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / self.NAME
+            local.write_text("# entity", encoding="utf-8")
+            upload_file(service, "FOLDER", local)
+        self.assertIn(self.ESCAPED, service.queries[0],
+                      "the apostrophe reached the query unescaped")
+
+    def test_a_name_without_one_is_left_alone(self):
+        """Anti-tautology: escaping must not rewrite ordinary names."""
+        from lupa.drive import ensure_folder
+        service = RecordingService()
+        ensure_folder(service, "PARENT", "by-entity")
+        self.assertIn("name = 'by-entity'", service.queries[0])
+        self.assertNotIn("\\", service.queries[0])
