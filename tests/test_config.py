@@ -279,3 +279,57 @@ class TestPriceOverridesAreReadFromTheFile(unittest.TestCase):
     def test_the_price_overrides_are_settings(self):
         self.assertIn("LUPA_INPUT_PRICE", SETTINGS)
         self.assertIn("LUPA_OUTPUT_PRICE", SETTINGS)
+
+
+class TestAnUnexpandedPlaceholderIsNotAValue(unittest.TestCase):
+    """A variable that arrived as a literal template was never configured.
+
+    Regression, 2026-08-20: `.mcp.json` passes
+    `"LUPA_INDEXES": "${LUPA_INDEXES}"`. On a machine where the user never
+    exported that variable, the literal template reached the MCP server — and a
+    literal is truthy. The presence check passed, the default was never reached,
+    and the server looked for a folder named `${LUPA_INDEXES}`. `lupa status`
+    over MCP reported zero collections on a machine holding four, including the
+    client archive that had just been published.
+
+    Presence is not meaning. This is the same mistake as every other defect in
+    this codebase, wearing a different coat.
+    """
+
+    PLACEHOLDER = "${LUPA_INDEXES}"
+
+    def test_the_placeholder_falls_back_to_the_default(self):
+        from lupa.config import DEFAULT_INDEX_ROOT, resolve_index_root
+        self.assertEqual(resolve_index_root({"LUPA_INDEXES": self.PLACEHOLDER}, {}),
+                         Path(DEFAULT_INDEX_ROOT).expanduser())
+
+    def test_a_real_path_is_still_honored(self):
+        """Anti-tautology: the guard must not swallow a configured value."""
+        from lupa.config import resolve_index_root
+        self.assertEqual(resolve_index_root({"LUPA_INDEXES": "/tmp/indexes"}, {}),
+                         Path("/tmp/indexes"))
+
+    def test_the_placeholder_does_not_defeat_the_state_dir(self):
+        """The second fallback has to be reachable too, not only the last one."""
+        from lupa.config import resolve_index_root
+        self.assertEqual(
+            resolve_index_root({"LUPA_INDEXES": self.PLACEHOLDER},
+                               {"LUPA_STATE_DIR": "/var/lupa"}),
+            Path("/var/lupa") / "indexes")
+
+    def test_environment_ignores_a_placeholder_from_the_process(self):
+        import os
+
+        from lupa.config import environment
+
+        saved = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = "${GEMINI_API_KEY}"
+        try:
+            self.assertNotEqual(environment().get("GEMINI_API_KEY"),
+                                "${GEMINI_API_KEY}",
+                                "a template reached the run as if it were a key")
+        finally:
+            if saved is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = saved
