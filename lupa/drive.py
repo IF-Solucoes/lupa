@@ -286,6 +286,24 @@ def _quoted(value):
     return f"'{text}'"
 
 
+def list_children(service, folder_id):
+    """Everything directly inside a folder — files and subfolders, no trash."""
+    return _list_page(service, children_query(folder_id),
+                      "files(id,name,mimeType),nextPageToken")
+
+
+def retire_file(service, file_id):
+    """Moves a file to the Drive trash. Recoverable on purpose.
+
+    An index that shrank is never a reason to destroy somebody's file. The trash
+    holds it for thirty days, which is the whole difference between a mistake
+    that can be undone and one that cannot. The drive.file scope already
+    guarantees this can only reach files lupa itself created.
+    """
+    return service.files().update(fileId=file_id, body={"trashed": True},
+                                  supportsAllDrives=True).execute()["id"]
+
+
 def ensure_folder(service, parent_id, name):
     """Finds (or creates) a subfolder. This is how _lupa/ is born inside a collection."""
     query = (f"'{parent_id}' in parents and name = {_quoted(name)} and "
