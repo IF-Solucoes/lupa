@@ -888,3 +888,81 @@ class TestAFailedRunDoesNotPublish(IndexCommandHarness):
         self.assertNotEqual(0, code)
         self.assertEqual(0, published,
                          "a partial index was published as if it were complete")
+
+
+class TestThePriceQuotedIsThePriceOfThisRun(IndexCommandHarness):
+    """The plan quotes a cost. It must be the cost of the run about to happen.
+
+    Regression, 2026-08-20: the preview that produces "estimated cost" was
+    called without `batch` and without `model`, so it always quoted batch — half
+    price — for the default model. Two ways to be wrong at once: `--no-batch`
+    was quoted at half of what it charges, and `LUPA_MODEL` pointing at a
+    pricier model was quoted at the cheap model's price. The preflight block
+    above it had the right numbers, which made the disagreement invisible: two
+    prices on one screen, and the wrong one is the one with the total on it.
+
+    Behavioral: the printed line is the only place the two meet.
+    """
+
+    class FortyImages:
+        """Enough images that the difference survives format_cost's rounding."""
+
+        def list(self):
+            return [{"id": f"i{n}", "file": f"i{n}.png", "hash": f"h{n}",
+                     "mime": "image/png", "w": 1080, "h": 1350, "exif": {},
+                     "url": f"https://example.invalid/i{n}",
+                     "trashed": False, "size": 100}
+                    for n in range(40)]
+
+        def fetch(self, file_id):
+            return b"bytes", "image/png"
+
+    COUNT = 40
+
+    def quoted_cost(self, *extra):
+        """Runs the preflight only (--dry-run) and returns the cost line."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        original_source = cli.build_source
+        cli.build_source = lambda *a, **k: (self.FortyImages(), None)
+        printed = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["index", str(self.collection), "--yes", "--dry-run",
+                              "--no-contact-sheets", *extra])
+                except SystemExit:
+                    pass
+        finally:
+            cli.build_source = original_source
+        line = next(l for l in printed.getvalue().splitlines()
+                    if "estimated cost" in l)
+        return line
+
+    def expected(self, batch, model=None):
+        from lupa import caption, gemini
+        return caption.format_cost(
+            caption.estimate_cost(self.COUNT, batch=batch,
+                                  model=model or gemini.DEFAULT_MODEL))
+
+    def test_batch_is_still_quoted_at_half_price(self):
+        """Anti-tautology: the default path must keep quoting the batch price."""
+        self.assertIn(self.expected(batch=True), self.quoted_cost())
+
+    def test_no_batch_is_quoted_at_full_price(self):
+        cheap = self.expected(batch=True)
+        real = self.expected(batch=False)
+        self.assertNotEqual(cheap, real, "the fixture stopped telling the two apart")
+        self.assertIn(real, self.quoted_cost("--no-batch"))
+
+    def test_the_configured_model_is_the_model_priced(self):
+        import os
+        os.environ["LUPA_MODEL"] = "gemini-2.5-flash-lite"
+        expected = self.expected(batch=False, model="gemini-2.5-flash-lite")
+        default = self.expected(batch=False)
+        self.assertNotEqual(expected, default,
+                            "the fixture stopped telling the two models apart")
+        self.assertIn(expected, self.quoted_cost("--no-batch"))
