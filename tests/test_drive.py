@@ -2,7 +2,8 @@
 import json
 import unittest
 
-from lupa.drive import FIELDS, folder_query, normalize_file
+from lupa.drive import (FIELDS, MAP_FIELDS, children_query, folder_query,
+                        normalize_file)
 
 
 class TestNormalization(unittest.TestCase):
@@ -200,21 +201,27 @@ class TestEveryRequestedFieldExistsInTheAPI(unittest.TestCase):
         cls.file_schema = json.loads(get_static_doc("drive", "v3"))["schemas"]["File"]
 
     def test_every_name_in_fields_is_a_real_property_at_its_level(self):
-        groups = _parse_field_spec(FIELDS)
-        unknown = []
+        # MAP_FIELDS is here for the same reason FIELDS is: `lupa map` asks for
+        # every child of every folder, and one invented name would answer HTTP
+        # 400 on the first listing of a walk that can be thousands of files long.
+        for label, spec in (("FIELDS", FIELDS), ("MAP_FIELDS", MAP_FIELDS)):
+            with self.subTest(label):
+                groups = _parse_field_spec(spec)
+                unknown = []
 
-        def walk(schema, parent):
-            known = set(schema.get("properties") or {})
-            for name in sorted(groups.get(parent, ())):
-                if name not in known:
-                    unknown.append(f"{parent}.{name}")
-                    continue
-                if name in groups:
-                    walk(schema["properties"][name], name)
+                def walk(schema, parent):
+                    known = set(schema.get("properties") or {})
+                    for name in sorted(groups.get(parent, ())):
+                        if name not in known:
+                            unknown.append(f"{parent}.{name}")
+                            continue
+                        if name in groups:
+                            walk(schema["properties"][name], name)
 
-        walk(self.file_schema, "files")   # files(...) holds File properties
-        self.assertEqual(unknown, [], f"lupa asks Drive for {unknown}, which the "
-                                      f"File schema does not have")
+                walk(self.file_schema, "files")   # files(...) holds File properties
+                self.assertEqual(unknown, [],
+                                 f"{label} asks Drive for {unknown}, which the "
+                                 f"File schema does not have")
 
     def test_the_phantom_field_is_named_here_so_it_cannot_come_back(self):
         self.assertNotIn("contentSnippet", set(self.file_schema["properties"]))
@@ -228,3 +235,94 @@ class TestNoPhantomFieldsInTheNormalizedItem(unittest.TestCase):
 
     def test_it_invents_no_labels(self):
         self.assertNotIn("labels", normalize_file({"id": "x", "name": "a.png"}))
+
+
+# --- the walk `lupa map` uses -------------------------------------------
+
+class MixedDriveService:
+    """Answers `children_query`: every child of a folder, folders included.
+
+    tree: {folder_id: [(id, name, mimeType), ...]}
+    """
+
+    FOLDER = "application/vnd.google-apps.folder"
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.queries = []
+
+    def files(self):
+        return self
+
+    def list(self, q=None, **_):
+        self.queries.append(q)
+        parent = q.split("'")[1]
+        return FakeRequest({"files": [
+            {"id": fid, "name": name, "mimeType": mime, "size": "1"}
+            for fid, name, mime in self.tree.get(parent, [])]})
+
+
+MIXED = {
+    "root": [("f1", "4 - Fotos & Vídeos", MixedDriveService.FOLDER),
+             ("idx", "_lupa", MixedDriveService.FOLDER),
+             ("a", "capa.png", "image/png")],
+    "f1": [("f2", "Brutas", MixedDriveService.FOLDER),
+           ("b", "manual.pdf", "application/pdf")],
+    "f2": [("c", "clip.mp4", "video/mp4"),
+           ("d", "briefing", "application/vnd.google-apps.document")],
+    "idx": [("z", "INDEX.md", "text/markdown")],
+}
+
+
+class TestWalkEntries(unittest.TestCase):
+    """The half `list_images` throws away. Everything not an image lives here."""
+
+    def setUp(self):
+        from lupa.drive import walk_entries
+        self.service = MixedDriveService(MIXED)
+        self.walked = dict(walk_entries(self.service, "root"))
+
+    def test_it_yields_every_folder_by_relative_prefix(self):
+        self.assertEqual(sorted(self.walked),
+                         ["", "4 - Fotos & Vídeos/", "4 - Fotos & Vídeos/Brutas/"])
+
+    def test_it_returns_the_files_an_index_would_never_see(self):
+        deepest = self.walked["4 - Fotos & Vídeos/Brutas/"]
+        self.assertEqual(sorted(f["mime"] for f in deepest),
+                         ["application/vnd.google-apps.document", "video/mp4"])
+
+    def test_folders_are_not_reported_as_files(self):
+        self.assertEqual([f["name"] for f in self.walked[""]], ["capa.png"])
+
+    def test_it_never_descends_into_its_own_index_folder(self):
+        self.assertNotIn("_lupa/", self.walked)
+
+    def test_it_asks_each_folder_exactly_once(self):
+        """One listing per folder, not two.
+
+        `walk_folders` + `list_images` ask every folder twice — once for its
+        subfolders and once for its images. On a collection whose listing
+        already takes a minute and a half, halving the round trips is the
+        difference between a map and a coffee break.
+        """
+        self.assertEqual(len(self.service.queries), 3)
+        self.assertNotIn("image/", " ".join(self.service.queries))
+
+    def test_the_query_asks_for_everything_that_is_not_in_the_trash(self):
+        query = children_query("FOLDER123")
+        self.assertIn("'FOLDER123' in parents", query)
+        self.assertIn("trashed = false", query)
+        self.assertNotIn("image/", query)
+
+    def test_an_empty_folder_is_still_yielded(self):
+        from lupa.drive import walk_entries
+        service = MixedDriveService({"only": [("e", "Vazia", MixedDriveService.FOLDER)],
+                                     "e": []})
+        self.assertEqual(dict(walk_entries(service, "only")), {"": [], "Vazia/": []})
+
+    def test_a_folder_loop_does_not_hang(self):
+        from lupa.drive import walk_entries
+        looping = {"a": [("b", "B", MixedDriveService.FOLDER)],
+                   "b": [("a", "A", MixedDriveService.FOLDER)]}
+        self.assertEqual(sorted(dict(walk_entries(MixedDriveService(looping), "a"))),
+                         ["", "B/"])

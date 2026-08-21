@@ -157,6 +157,41 @@ python3 -m lupa index if-editorial                                      # saved 
 `index` and `update` are the same command: lupa reads the index and decides whether
 this is a first run or an update. **You never have to choose.**
 
+### Step 0: `lupa map` — what is in there, before paying for any of it
+
+```bash
+python -m lupa map "https://drive.google.com/drive/folders/1a2B3c"
+python -m lupa map ~/Photos/Client --depth 3
+```
+
+It walks the folders and counts the files by type. No download, no model call, no
+`GEMINI_API_KEY` — there is no version of this command that costs money.
+
+It answers what an index cannot: **what gets left out.** `lupa index` lists only
+images in a format it supports, so video, PSD, PDF and Google Docs never appear in
+an index, a plan, or a cost. They are simply absent. On the first real collection
+that was 152 files — 75 of them video — sitting invisibly beside the 875 images.
+
+```
+Drive map · "cvn-clinica-veterinaria-noroeste" · 1a2B3c
+free · names and types only — no download, no model call, no API key
+
+    6 - Linha Editorial /                        272 indexable · 14 ignored
+    4 - Fotos & Vídeos /                         489 indexable · 75 ignored
+      Vídeos /                                   ignored: 53 mp4 · 21 mov
+      Tratamento de Fotos/                       489 jpg · ignored: 1 mp4
+
+  total: 875 indexable · 152 ignored (mp4 54 · pdf 46 · mov 21 · fig 11 · …)
+```
+
+Two levels are printed by default; `--depth N` opens more, and the folding is
+announced rather than silent. It also writes `MAP.md` next to where the index will
+live — a sibling of `INDEX.md`, readable by the search agent — or wherever `--out`
+says.
+
+It is **not** part of preflight, on purpose: preflight runs before every indexing
+run and has to be quick, and a map is a full walk of the collection.
+
 ### Every run starts with preflight
 
 Before spending a cent, the command checks the environment, explains what is

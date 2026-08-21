@@ -9,7 +9,7 @@
     {
       "name": "lupa",
       "description": "Describe every image in a collection once, then search it as text. Google Drive or a local folder, incremental updates, and an MCP server with BM25 ranking.",
-      "version": "0.6.1",
+      "version": "0.7.0",
       "source": ".",
       "author": {
         "name": "IF Soluções"

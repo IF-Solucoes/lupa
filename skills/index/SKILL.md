@@ -8,7 +8,9 @@ description: >-
   run starts with a preflight that checks the environment, explains what is missing,
   and shows the cost before spending. Incremental: only what changed costs anything.
   Do NOT use to search an existing index (skill lupa-search), and do NOT use to judge
-  whether an image suits a brand.
+  whether an image suits a brand. Also covers `lupa map` — the free step 0 that
+  shows the shape of a collection (how many files lupa can index, and how many it
+  ignores: video, PSD, PDF, Google Docs) before anything is indexed or paid for.
 ---
 
 # lupa · index
@@ -24,6 +26,47 @@ one you point at, at any depth, and never enters a `_lupa/` index folder. Pass
 
 **It holds no opinion.** It knows nothing about clients, brands, or editorial
 direction. Judging fitness belongs to the consuming skill.
+
+## Step 0 — look before you index (`lupa map`, free)
+
+```bash
+python -m lupa map <target>
+```
+
+**Offer this whenever the user has not indexed this collection before, or does not
+know what is in it.** It walks the folders and counts the files by type. It
+downloads nothing, describes nothing and calls no model — it does not even need a
+`GEMINI_API_KEY`, so there is no version of this command that costs money.
+
+It answers the one question the index cannot: **what will be left out.** `lupa
+index` lists only images in a supported format, so video, PSD, PDF and Google Docs
+never appear in an index, in a plan, or in a cost — they are simply absent. In a
+folder called `4 - Fotos & Vídeos` that absence is the whole story: the index
+reports 489 images and says nothing about the 298 `.mp4` beside them.
+
+```
+Drive map · "acervo" · 1K6qh1sIFt9SyvKLgVMiFP4x3rI4vfXa-
+free · names and types only — no download, no model call, no API key
+
+    4 - Fotos & Vídeos/                          489 indexable · 312 ignored
+      Tratamento de Fotos/                       485 jpg
+      Brutas/                                    4 jpg · 298 mp4 · 14 mov
+
+  total: 875 indexable · 356 ignored (mp4 298 · psd 41 · mov 14 · pdf 3)
+```
+
+| flag | what it does |
+|---|---|
+| `--depth N` | how many folder levels to print (default 2). Deeper folders are folded into the row above and the folding is announced — raise it to open them |
+| `--out PATH` | where to write `MAP.md`. By default it goes next to where the index will live, `<index root>/<collection>/MAP.md`, as a sibling of `INDEX.md` |
+
+Two things to report back, always: the number of **ignored** files by type, and
+that the map cost nothing. A user deciding where to spend needs the first; a user
+who has just been shown a number needs the second.
+
+`map` is **not** part of preflight, and must not be run before every index:
+preflight has to be quick, and a map is a full walk of the collection. Run it once,
+when the shape is unknown.
 
 ## One command, and the user needs to know nothing
 

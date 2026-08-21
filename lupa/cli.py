@@ -6,6 +6,12 @@
                            reads the index and decides whether this is a first
                            run or an update.
 
+  lupa map    <target>     step 0: what is in there — how many files lupa can
+                           index, and how many it will ignore in silence
+                           (video, PSD, PDF, Google Docs). Costs nothing, needs
+                           no API key, and is not part of preflight: it is a
+                           full walk of the collection.
+
   lupa search "<terms>"    query
   lupa status              what is indexed
 
@@ -16,6 +22,7 @@ import argparse
 import os
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -668,6 +675,113 @@ def command_forget(args):
         print(f"  the local index is still at {index_dir} (pass --delete-index to remove it)")
 
 
+def scan_progress(stream=None):
+    """Something on the screen while a large collection is being listed.
+
+    Listing the 875 images of the first real collection took ninety-five seconds
+    in total silence, and the honest reading of a silent terminal is that the
+    thing has hung.
+
+    On a terminal the line is rewritten in place. When stderr is a file or a
+    pipe there is no cursor to move, so it prints a line every so often instead:
+    a log full of carriage returns is worse than no log.
+    """
+    stream = stream or sys.stderr
+    started = time.monotonic()
+    state = {"drawn": 0.0, "in_place": False}
+
+    def report(folders, files):
+        now = time.monotonic()
+        interactive = bool(getattr(stream, "isatty", lambda: False)())
+        if interactive:
+            if now - state["drawn"] < 0.2:
+                return
+            state["in_place"] = True
+        elif folders % 25:
+            return
+        state["drawn"] = now
+        text = f"  scanning… {folders} folders · {files} files · {now - started:.0f}s"
+        stream.write(f"\r{text}" if interactive else f"{text}\n")
+        stream.flush()
+
+    def done():
+        if state["in_place"]:
+            stream.write("\r" + " " * 72 + "\r")
+            stream.flush()
+
+    return report, done
+
+
+def command_map(args):
+    """Step 0: what is in there, before anything is indexed or paid for.
+
+    Deliberately NOT part of preflight. Preflight runs before every indexing run
+    and has to be quick; mapping a collection is a full walk of it. And it is
+    deliberately not an indexing verb — it needs no GEMINI_API_KEY, reaches no
+    model, and this function must never grow a code path that does.
+    """
+    from lupa import mapping
+
+    env = config.environment()
+    registry = config.read_config(file_env=env)
+
+    try:
+        target = resolve_entry(args.target, registry)
+    except InvalidTarget as error:
+        sys.exit(f"\n{error}\n")
+
+    if target.kind == "drive":
+        client = env.get("LUPA_OAUTH_CLIENT")
+        if not (client and Path(client).expanduser().exists()):
+            sys.exit(
+                f"\nNo Google Drive access: no OAuth client at "
+                f"{client or '(not configured)'}\n"
+                "  At https://console.cloud.google.com :\n"
+                "    1. enable the Google Drive API on your project\n"
+                "    2. Credentials → Create → OAuth client ID → Desktop app\n"
+                "    3. download the JSON and save it as the LUPA_OAUTH_CLIENT path\n"
+                "  A local folder needs none of this — pass a path instead.\n")
+        from lupa.drive import connect, folder_name
+        from lupa.target import slugify
+        service = connect(client, env.get("LUPA_OAUTH_TOKEN"))
+        try:
+            target.name = slugify(folder_name(service, target.folder_id))
+        except Exception:
+            pass                     # no permission to read the name: keep the id
+        walk = mapping.drive_walk(service, target.folder_id)
+        heading, title = "Drive map", f'"{target.name}" · {target.folder_id}'
+        # Drive answers a listing you are not allowed to see with an empty list
+        # rather than an error, so "empty" and "not shared with you" arrive
+        # identical. Same sentence the index skill already relays.
+        empty_hint = ("Drive answers a folder you cannot see with an empty list, "
+                      "not an error — check it was shared with this account.")
+    else:
+        walk = mapping.local_walk(target.path)
+        heading, title = "Folder map", f'"{target.name}" · {target.path}'
+        empty_hint = ""
+
+    report, done = scan_progress()
+    try:
+        tree = mapping.build_tree(walk, kind=target.kind, on_progress=report)
+    finally:
+        done()
+
+    print()
+    print(mapping.render(tree, title, depth=args.depth, heading=heading,
+                         empty_hint=empty_hint))
+
+    # Written where INDEX.md will live, so the search agent finds it in the one
+    # place it already looks. `map` runs BEFORE any index exists, so this may be
+    # the first file in that directory — which is fine: MANIFEST.json is what
+    # marks a collection as indexed, and MAP.md is not it.
+    destination = (Path(args.out).expanduser() if args.out else
+                   config.resolve_index_root(os.environ, env) / target.name / "MAP.md")
+    mapping.write_map(destination, tree, title, heading=heading)
+    print(f"  written to {destination}")
+    print("  nothing was indexed and nothing was spent — to index it: "
+          f"python -m lupa index {shell_quote(args.target)}\n")
+
+
 def command_search(args):
     env = config.environment()
     server = Server(config.resolve_index_root(os.environ, env))
@@ -756,6 +870,21 @@ def main(argv=None):
                              "false only the clean ones")
     finder.add_argument("--limit", type=int, default=15)
 
+    # Its own subcommand, sharing nothing with the loop above on purpose. `map`
+    # spends no money and describes no image, so every flag that guards spending
+    # would be a lie here — and inheriting them is how a command ends up
+    # accepting --rebuild and quietly doing nothing with it.
+    mapper = sub.add_parser(
+        "map", help="what is in a collection, before indexing any of it (free)")
+    mapper.add_argument("target",
+                        help="Drive URL, folder id, local path, or a saved name")
+    mapper.add_argument("--depth", type=int, default=2,
+                        help="how many folder levels to print (default 2); "
+                             "anything deeper is folded into the row above it")
+    mapper.add_argument("--out", metavar="PATH",
+                        help="where to write MAP.md "
+                             "(default: <index root>/<collection>/MAP.md)")
+
     sub.add_parser("status", help="indexed collections")
 
     forget = sub.add_parser("forget", help="remove a collection from the registry")
@@ -773,6 +902,8 @@ def main(argv=None):
     try:
         if args.command in ("index", "update"):
             command_index(args)
+        elif args.command == "map":
+            command_map(args)
         elif args.command == "search":
             command_search(args)
         elif args.command == "forget":
