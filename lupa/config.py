@@ -31,6 +31,24 @@ SETTINGS = ("GEMINI_API_KEY", "LUPA_MODEL", "LUPA_BATCH", "LUPA_LANG", "LUPA_STA
             "LUPA_INPUT_PRICE", "LUPA_OUTPUT_PRICE")
 
 
+def configured(value):
+    """True when a variable carries a value, and not merely its own name.
+
+    `.mcp.json` passes `"LUPA_INDEXES": "${LUPA_INDEXES}"`. On a machine where
+    the user never exported that variable, the literal template arrives here
+    instead of a path — and a literal is truthy, so every `if env.get(KEY)` in
+    this module read it as configured, took the branch, and never reached the
+    default. The MCP server went looking for a folder named `${LUPA_INDEXES}`
+    and reported an empty machine holding four collections, one of them a client
+    archive published that same day.
+
+    Presence is not meaning. Both readers below ask this instead of asking
+    whether the key is there.
+    """
+    text = str(value or "").strip()
+    return bool(text) and not (text.startswith("${") and text.endswith("}"))
+
+
 def first_existing(candidates):
     """The first path that exists; otherwise the last candidate, so callers always
     get something to report in an error message."""
@@ -93,7 +111,7 @@ def environment(path=None):
     """
     values = read_env(path)
     for key in SETTINGS:
-        if os.environ.get(key):
+        if configured(os.environ.get(key)):
             values[key] = os.environ[key]
     values["LUPA_OAUTH_TOKEN"] = str(
         Path(values.get("LUPA_OAUTH_TOKEN") or DEFAULT_OAUTH_TOKEN).expanduser())
@@ -161,8 +179,8 @@ def resolve_index_root(process_env, file_env):
     The canonical index lives with the collection. This is the working mirror.
     Order: explicit variable > LUPA_STATE_DIR from the env file > portable default.
     """
-    if process_env.get("LUPA_INDEXES"):
+    if configured(process_env.get("LUPA_INDEXES")):
         return Path(process_env["LUPA_INDEXES"]).expanduser()
-    if file_env.get("LUPA_STATE_DIR"):
+    if configured(file_env.get("LUPA_STATE_DIR")):
         return Path(file_env["LUPA_STATE_DIR"]).expanduser() / "indexes"
     return Path(DEFAULT_INDEX_ROOT).expanduser()
