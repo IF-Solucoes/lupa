@@ -500,13 +500,23 @@ def command_index(args):
     source, service = build_source(target, env, root / ".cache" / target.name,
                                   recursive=not args.no_recursive)
 
+    # Both hoisted above the preview, because the preview is what produces the
+    # only total on the screen. Resolved lower down, the preview quoted batch
+    # price for the default model no matter what this run was about to do: a
+    # --no-batch run was quoted at half of what it charges, and LUPA_MODEL
+    # pointing at a pricier model was quoted at the cheap one's price.
+    model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
+    use_batch = str(env.get("LUPA_BATCH", "1")).strip() not in ("0", "false", "no")
+
     # rebuild travels with the preview, or the plan and the price printed below
     # describe a run nobody asked for: without it the preview reconciles against
     # the manifest that --rebuild discards, and an unchanged collection prints
     # "0 images to describe · US$ 0.00" for a run about to re-describe all of it.
     preview = run_pipeline(collection=target.name, index_dir=index_dir, source=source,
                            describe=lambda *a: {}, mode="update", now=utc_stamp(),
-                           dry_run=True, rebuild=args.rebuild)
+                           dry_run=True, rebuild=args.rebuild,
+                           batch=use_batch and not args.no_batch,
+                           model=model, env=env)
     plan = preview["plan"]
     pending = len(plan.to_describe)
 
@@ -530,7 +540,6 @@ def command_index(args):
         config.write_config(registry, file_env=env)
 
     # Before anything this run might spend: money it may have spent already.
-    model = env.get("LUPA_MODEL") or gemini.DEFAULT_MODEL
     resume_batch = _settle_inflight_batch(args, index_dir, target.name, model, plan)
 
     if plan.empty:
@@ -568,7 +577,6 @@ def command_index(args):
 
     language = env.get("LUPA_LANG") or caption.DEFAULT_LANGUAGE
     api_key = env.get("GEMINI_API_KEY")
-    use_batch = str(env.get("LUPA_BATCH", "1")).strip() not in ("0", "false", "no")
     # A resume is never a per-image run: those answers are already bought and
     # waiting, and describing again would pay full price for the same images.
     batch_mode = bool(resume_batch) or (use_batch and not args.no_batch)
@@ -632,9 +640,20 @@ def command_index(args):
         for line in measured:
             print(line)
 
+    # Publishing is how a run leaves the machine, and it is the one step that
+    # touches somebody else's Drive. The exit code below says the run failed, but
+    # it is only read by whatever comes next — by then the push already happened,
+    # and an index with holes has overwritten one that had none. So the failure
+    # holds the push back here, where it can still be held.
     if service and not args.no_push:
-        from lupa.publish import publish
-        publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
+        if result["failures"]:
+            print()
+            print(f"  not published: {len(result['failures'])} images failed, "
+                  "and a partial index must not overwrite the one on Drive.")
+            print(f"    lupa index {args.target} --retry-failed")
+        else:
+            from lupa.publish import publish
+            publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
 
     _clear_cache(root / ".cache" / target.name)
 

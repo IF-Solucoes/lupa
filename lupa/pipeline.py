@@ -162,7 +162,8 @@ def _describe_many(source, describe, index_dir, raw_by_id, ids, workers):
 
 def run(collection, index_dir, source, describe, mode="update", now="",
         dry_run=False, rebuild=False, confirm=None, batch=True,
-        model=gemini.DEFAULT_MODEL, contact_sheets=True, workers=1, usage=None):
+        model=gemini.DEFAULT_MODEL, contact_sheets=True, workers=1, usage=None,
+        env=None):
     """Executes one full run.
 
     source   — object exposing .list() and .fetch(file_id) -> (bytes, mime)
@@ -188,7 +189,10 @@ def run(collection, index_dir, source, describe, mode="update", now="",
     # which is exactly what a rebuild means.
     manifest = {"items": {}} if rebuild else _load_manifest(index_dir)
     plan = reconcile(remote, manifest)
-    cost = estimate_cost(len(plan.to_describe), batch=batch)
+    # `model` and `env` were already in hand and were not being passed, so every
+    # estimate quoted the default model's table price and ignored the
+    # LUPA_INPUT_PRICE/LUPA_OUTPUT_PRICE overrides the preflight honors.
+    cost = estimate_cost(len(plan.to_describe), batch=batch, model=model, env=env)
 
     if dry_run:
         return {"plan": plan, "estimated_cost": cost, "failures": [],
