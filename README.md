@@ -236,9 +236,29 @@ plan, so a broken read cannot empty a client's folder.
 
 ```bash
 python3 -m lupa search "bread oven warm light" --kind photo
+python3 -m lupa fetch "https://drive.google.com/file/d/1a2B3c/view" --out ./work
 python3 -m lupa status
 python3 -m lupa forget old-collection --delete-index
 ```
+
+### `lupa fetch` — bring the file to disk
+
+Search tells you what exists and why it fits; `fetch` brings it down. Without
+this the loop does not close: the agent finds the right image and is left holding
+a URL it cannot open.
+
+```
+python3 -m lupa fetch <id | url | path> --out ./work
+```
+
+The path in `file` is a **Drive** path, not a filesystem one. A segment may end
+in a space — Drive allows it, Windows does not — so `file` does not resolve on
+disk and is not meant to. The id resolves. All three forms that show up in a
+search result are accepted, and a path is matched with that invisible space
+normalized away, because nobody types it.
+
+Downloads are named after the catalog entry, not the id: a folder full of
+`1N-pGXyxA4Iz...` is a folder nobody can read.
 
 Search runs over a SQLite FTS5 projection of the catalog, so ranking is **BM25**:
 a term appearing in three images outweighs one appearing in three thousand. All

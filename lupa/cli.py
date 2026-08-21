@@ -26,6 +26,7 @@ spending.
 """
 import argparse
 import os
+import re
 import sys
 import threading
 import time
@@ -881,6 +882,113 @@ def command_search(args):
                               "limit": args.limit, **filters}))
 
 
+def command_fetch(args):
+    """Traz para o disco os arquivos que a busca achou.
+
+    Sem isto o ciclo nao fecha: `search` devolve o que existe e por que serve,
+    e ai o agente fica olhando para uma URL sem ter como abrir a imagem. O
+    caminho em `file` e do Drive, nao do sistema de arquivos local, entao ele
+    nao resolve em disco nem deveria — quem resolve e o id.
+
+    Aceita id cru, URL de compartilhamento, ou o caminho relativo dentro de uma
+    colecao ja indexada. As tres formas aparecem no resultado da busca, e obrigar
+    a pessoa a escolher a certa seria transferir para ela um trabalho de dois
+    regex.
+    """
+    from pathlib import Path
+
+    from lupa import drive
+
+    env = config.environment()
+    destino = Path(args.out or ".").expanduser()
+
+    alvos = []
+    for bruto in args.alvos:
+        file_id = _file_id_de(bruto)
+        if file_id:
+            # Salvar com o id por nome deixa a pasta ilegivel. O catalogo ja
+            # sabe como o arquivo se chama, entao vale a consulta antes de gravar.
+            alvos.append((file_id, _nome_do_id(env, file_id, args.collection)))
+            continue
+        # Nao e id nem URL: procura como caminho dentro da colecao indexada.
+        achado = _por_caminho(env, bruto, args.collection)
+        if not achado:
+            sys.exit(f"\n✋ nao encontrei {bruto!r} — passe o id, a URL, "
+                     f"ou o caminho exato como aparece na busca\n")
+        alvos.append(achado)
+
+    service = drive.connect(os.environ.get("LUPA_OAUTH_CLIENT")
+                            or env.get("LUPA_OAUTH_CLIENT"),
+                            env.get("LUPA_OAUTH_TOKEN"))
+
+    for file_id, nome in alvos:
+        nome = nome or file_id
+        caminho = destino / Path(nome).name
+        drive.download(service, file_id, caminho)
+        print(f"{caminho}")
+
+
+def _file_id_de(bruto):
+    """O id, quando o que veio ja e um id ou uma URL do Drive."""
+    achado = re.search(r"/d/([A-Za-z0-9_-]{20,})", bruto) or \
+        re.search(r"[?&]id=([A-Za-z0-9_-]{20,})", bruto)
+    if achado:
+        return achado.group(1)
+    # Um id cru nao tem barra, ponto nem espaco. Um caminho tem pelo menos um.
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", bruto):
+        return bruto
+    return None
+
+
+def _nome_do_id(env, file_id, colecao=None):
+    """O nome do arquivo, quando o catalogo ja conhece esse id."""
+    for ficha in _fichas(env, colecao):
+        if ficha.get("id") == file_id or file_id in (ficha.get("url") or ""):
+            return (ficha.get("file") or "").split("/")[-1] or None
+    return None
+
+
+def _fichas(env, colecao=None):
+    """Percorre as fichas do catalogo, de uma colecao ou de todas."""
+    import json
+
+    raiz = Path(config.resolve_index_root(os.environ, env))
+    if not raiz.exists():
+        return
+    pastas = [raiz / colecao] if colecao else [
+        p for p in raiz.iterdir() if p.is_dir()]
+    for pasta in pastas:
+        catalogo = pasta / "catalog.jsonl"
+        if not catalogo.exists():
+            continue
+        for linha in catalogo.read_text(encoding="utf-8").splitlines():
+            if not linha.strip():
+                continue
+            try:
+                yield json.loads(linha)
+            except ValueError:
+                continue
+
+
+def _por_caminho(env, alvo, colecao=None):
+    """(id, nome) da ficha cujo `file` bate com o alvo, no catalogo indexado."""
+    for ficha in _fichas(env, colecao):
+        arquivo = ficha.get("file") or ""
+        # O caminho do Drive pode ter espaco no fim de um segmento, coisa que
+        # nenhum sistema de arquivos aceita — entao quem digita quase sempre
+        # digita sem. Comparar os dois normalizados evita um "nao encontrei"
+        # que so existe por causa de um espaco invisivel.
+        if arquivo == alvo or _sem_espaco(arquivo) == _sem_espaco(alvo) \
+                or arquivo.endswith("/" + alvo):
+            file_id = _file_id_de(ficha.get("url") or "") or ficha.get("id")
+            return (file_id, arquivo.split("/")[-1]) if file_id else None
+    return None
+
+
+def _sem_espaco(caminho):
+    return re.sub(r"\s*/\s*", "/", caminho).strip()
+
+
 def command_status(_args):
     env = config.environment()
     print(Server(config.resolve_index_root(os.environ, env)).tool_status({}))
@@ -977,6 +1085,19 @@ def main(argv=None):
                         help="where to write MAP.md "
                              "(default: <index root>/<collection>/MAP.md)")
 
+    # `search` diz o que existe; `fetch` traz. Separados de proposito: a busca e
+    # gratis e local, o download atravessa a rede e a conta OAuth. Juntar os dois
+    # num so verbo faria toda busca parecer capaz de gastar.
+    getter = sub.add_parser("fetch",
+                            help="baixa para o disco um arquivo que a busca achou")
+    getter.add_argument("alvos", nargs="+", metavar="ALVO",
+                        help="id, URL de compartilhamento, ou o caminho como "
+                             "aparece no resultado da busca")
+    getter.add_argument("--collection",
+                        help="restringe a procura por caminho a uma colecao")
+    getter.add_argument("--out", metavar="PASTA", default=".",
+                        help="onde gravar (padrao: pasta atual)")
+
     sub.add_parser("status", help="indexed collections")
 
     forget = sub.add_parser("forget", help="remove a collection from the registry")
@@ -1000,6 +1121,8 @@ def main(argv=None):
             command_publish(args)
         elif args.command == "search":
             command_search(args)
+        elif args.command == "fetch":
+            command_fetch(args)
         elif args.command == "forget":
             command_forget(args)
         else:
