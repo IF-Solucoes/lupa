@@ -12,6 +12,12 @@
                            no API key, and is not part of preflight: it is a
                            full walk of the collection.
 
+  lupa publish <target>    put an index that already exists into the
+                           collection's Drive folder. `lupa index` publishes at
+                           the end of a run that described something; a
+                           collection with nothing left to describe never
+                           reaches that step. Describes nothing, costs nothing.
+
   lupa search "<terms>"    query
   lupa status              what is indexed
 
@@ -549,8 +555,14 @@ def command_index(args):
         # run that never happened is how a folder nobody had permission to read
         # got reported as a successful indexing.
         if index_exists:
+            # It used to say "nothing to do", which this run cannot know. An
+            # unchanged collection has nothing to DESCRIBE; whether the index
+            # ever reached the client's Drive is a different question, and that
+            # sentence sent the reader away from the one command with work left.
             print("Nothing changed since the last run. "
-                  "Nothing to do, nothing to pay.\n")
+                  "Nothing to describe, nothing to pay.")
+            print(f"  to put this index in the collection's Drive folder: "
+                  f"lupa publish {args.target}\n")
             return
 
         print(_nothing_found(target, recursive=not args.no_recursive))
@@ -668,6 +680,47 @@ def _clear_cache(path):
     """Downloaded originals are working copies. Keeping them wastes disk forever."""
     import shutil
     shutil.rmtree(Path(path), ignore_errors=True)
+
+
+def command_publish(args):
+    """Puts an index that already exists into the collection's Drive folder.
+
+    `lupa index` publishes at the end of a run that described something. An
+    index that is already complete describes nothing, so that run returns from
+    "Nothing changed since the last run" long before it reaches the publish
+    block — which left a finished, paid-for index with no command able to ship
+    it. The first client archive was published twice by a script calling
+    lupa.publish.publish() by hand.
+
+    Describing is what costs money; publishing is what makes the result useful
+    to anybody else. They needed separate doors.
+    """
+    env = config.environment()
+    registry = config.read_config(file_env=env)
+
+    try:
+        target = resolve_entry(args.target, registry)
+    except InvalidTarget as error:
+        sys.exit(f"\n{error}\n")
+
+    root = config.resolve_index_root(os.environ, env)
+    index_dir = root / target.name
+
+    # Refusing beats publishing an empty folder: with no index here, an upload
+    # would either do nothing or, worse, reconcile a live Drive folder against a
+    # plan built from nothing.
+    if not (index_dir / "MANIFEST.json").exists():
+        sys.exit(f'\nThere is no index for "{target.name}" to publish — nothing '
+                 f"at {index_dir}.\n  lupa index {args.target}\n")
+
+    _, service = build_source(target, env, root / ".cache" / target.name)
+    if not service:
+        sys.exit(f'\n"{target.name}" is not a Drive collection, so there is '
+                 "nowhere to publish it to. Publishing writes the index into "
+                 "the Drive folder the images came from.\n")
+
+    from lupa.publish import publish
+    publish(service, target.folder_id, index_dir, index_folder=INDEX_FOLDER)
 
 
 def command_forget(args):
@@ -874,6 +927,12 @@ def main(argv=None):
         entry.add_argument("--confirm",
                            help="the collection name, typed, to unlock --rebuild")
 
+    shipper = sub.add_parser("publish",
+                             help="put an index that already exists into its "
+                                  "Drive folder (describes nothing, costs nothing)")
+    shipper.add_argument("target",
+                         help="Drive URL, folder id, local path, or a saved name")
+
     finder = sub.add_parser("search", help="query the index")
     finder.add_argument("query")
     finder.add_argument("--collection")
@@ -923,6 +982,8 @@ def main(argv=None):
             command_index(args)
         elif args.command == "map":
             command_map(args)
+        elif args.command == "publish":
+            command_publish(args)
         elif args.command == "search":
             command_search(args)
         elif args.command == "forget":

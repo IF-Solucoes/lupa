@@ -216,6 +216,22 @@ Plan for this run
 On a `✗` it stops and spends nothing. Otherwise it shows the plan and asks before
 proceeding. `--dry-run` stops right after the plan; `--yes` skips the question.
 
+### Publishing an index that already exists
+
+```bash
+python -m lupa publish cvn-clinica-veterinaria-noroeste
+```
+
+A run that describes images publishes the result at the end, unless you pass
+`--no-push`. A collection with nothing left to describe never reaches that step —
+it stops at "Nothing changed" — so an index that is finished, or one built with
+`--no-push`, needs this verb to reach the Drive folder it belongs to. It
+describes nothing and costs nothing.
+
+Publishing reconciles: pages the index no longer has are moved to the Drive
+trash rather than left beside the current ones. It never does that on an empty
+plan, so a broken read cannot empty a client's folder.
+
 ### Searching
 
 ```bash

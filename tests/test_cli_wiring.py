@@ -966,3 +966,104 @@ class TestThePriceQuotedIsThePriceOfThisRun(IndexCommandHarness):
         self.assertNotEqual(expected, default,
                             "the fixture stopped telling the two models apart")
         self.assertIn(expected, self.quoted_cost("--no-batch"))
+
+
+class TestAFinishedIndexHasAWayToReachDrive(IndexCommandHarness):
+    """An index that is complete and paid for must have a command that ships it.
+
+    Regression, 2026-08-20: with the plan empty, `command_index` prints "Nothing
+    changed since the last run" and returns — from above the publish block. And
+    there was no publish verb. So a finished, validated index had no command
+    that could put it in the client's folder: the first client archive was
+    published twice by a script calling `lupa.publish.publish()` by hand.
+
+    "Nothing to describe" is not "nothing to do". The describing is what costs
+    money; the publishing is what makes it useful to anyone else.
+    """
+
+    def build_the_index(self):
+        """A complete local index, deliberately never pushed."""
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        code, _ = self.run_index(describe)
+        self.assertEqual(0, code, "the fixture failed to build an index")
+
+    def run_publish(self, *extra, service=True):
+        """Runs `lupa publish`. Returns (exit code, publish calls, output)."""
+        import contextlib
+        import io
+
+        import lupa.publish
+        from lupa import cli
+
+        calls = []
+        original_source, original_publish = cli.build_source, lupa.publish.publish
+        cli.build_source = lambda *a, **k: (self.FakeSource(),
+                                            object() if service else None)
+        lupa.publish.publish = lambda *a, **k: calls.append(a) or len(calls)
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["publish", str(self.collection), *extra])
+                except SystemExit as stop:
+                    if isinstance(stop.code, (int, type(None))):
+                        code = stop.code or 0
+                    else:
+                        code, _ = 1, print(stop.code)
+        finally:
+            cli.build_source, lupa.publish.publish = original_source, original_publish
+        return code, len(calls), printed.getvalue()
+
+    def test_the_verb_exists(self):
+        self.build_the_index()
+        code, _, printed = self.run_publish()
+        self.assertNotIn("invalid choice", printed)
+        self.assertEqual(0, code, printed)
+
+    def test_it_publishes_the_index_that_index_would_not(self):
+        self.build_the_index()
+        _, published, printed = self.run_publish()
+        self.assertEqual(1, published,
+                         f"a finished index still had no way to reach Drive: {printed}")
+
+    def test_it_refuses_when_there_is_no_index_yet(self):
+        """Nothing to publish is a refusal, not a silent success."""
+        code, published, printed = self.run_publish()
+        self.assertNotEqual(0, code)
+        self.assertEqual(0, published)
+        self.assertIn("lupa index", printed,
+                      "the refusal must name the command that builds one")
+
+    def test_it_refuses_a_collection_with_nowhere_to_publish(self):
+        """A local folder is not a Drive folder, and saying so beats a traceback."""
+        self.build_the_index()
+        code, published, printed = self.run_publish(service=False)
+        self.assertNotEqual(0, code)
+        self.assertEqual(0, published)
+
+
+class TestTheEmptyPlanPointsSomewhere(IndexCommandHarness):
+    """"Nothing to do" was not true, and it was the sentence that hid defect 21.
+
+    An unchanged collection has nothing to describe. Whether it has nothing to
+    DO is a different question, and the run cannot answer it: the index may
+    never have reached the client's Drive at all. Saying "nothing to do" sent
+    the reader away from the one command that had work left.
+    """
+
+    def test_it_does_not_claim_there_is_nothing_to_do(self):
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        self.run_index(describe)
+        _, printed = self.run_index(describe)
+        self.assertIn("Nothing changed", printed, "the fixture stopped being a no-op")
+        self.assertNotIn("Nothing to do", printed)
+
+    def test_it_names_the_command_that_still_has_work(self):
+        def describe(item, image, mime):
+            return {"caption": "ok", "tags": ["t"]}
+        self.run_index(describe)
+        _, printed = self.run_index(describe)
+        self.assertIn("lupa publish", printed)

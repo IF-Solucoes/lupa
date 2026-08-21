@@ -145,6 +145,27 @@ prints a summary. Report
 what changed (`+N added · ~N changed · -N removed`) and the cost. Failures, if any,
 land in `runs/<date>.errors.jsonl`.
 
+A run with failures **does not publish**: a partial index must not overwrite a
+complete one in the client's folder. Fix what failed, run again with
+`--retry-failed`, and the publish happens then.
+
+## Publishing on its own
+
+```bash
+lupa publish <target>
+```
+
+Two situations need it, and `lupa index` reaches neither:
+
+* the index was built with `--no-push` and the user now wants it on Drive;
+* the collection is unchanged, so the run stops at "Nothing changed" before the
+  publish step. An index with nothing left to describe may still never have been
+  published at all.
+
+It describes nothing and costs nothing. It also retires pages the index no
+longer has, moving them to the Drive trash, so a vocabulary that shrank does not
+leave stale tag pages sitting beside the current ones.
+
 ## What a run writes down about each image
 
 A caption, generic tags, type and material, orientation, palette, whether the image
