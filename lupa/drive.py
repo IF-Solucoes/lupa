@@ -22,6 +22,23 @@ FIELDS = ("files(id,name,mimeType,md5Checksum,size,modifiedTime,trashed,"
 INDEX_FOLDER = "_lupa"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
+# Fields for `lupa map`, which counts what an index will never see. It asks for
+# EVERY child of a folder, not only the images, so this is the smallest list that
+# can tell a folder from a file and a file from its type. Same rule as FIELDS
+# above: every name is a real File property, and tests/test_drive.py checks it
+# against the discovery document.
+MAP_FIELDS = "files(id,name,mimeType,size),nextPageToken"
+
+
+def children_query(folder_id):
+    """Everything directly inside this folder — files AND subfolders.
+
+    `folder_query` filters to `mimeType contains 'image/'`, which is exactly why
+    video, PSD and Google Docs are invisible to an index. Counting what gets
+    ignored means asking for all of it.
+    """
+    return f"'{folder_id}' in parents and trashed = false"
+
 
 def folder_query(folder_id):
     """Images directly inside this folder, nothing from the trash."""
@@ -150,6 +167,41 @@ def walk_folders(service, root_id):
                 continue
             seen.add(child_id)
             queue.append((child_id, f"{prefix}{name}/"))
+
+
+def walk_entries(service, root_id):
+    """Breadth-first walk yielding `(relative_prefix, files)` for every folder.
+
+    `files` is every non-folder child, whatever its type — this is what `lupa
+    map` counts, and it is the half `list_images` throws away.
+
+    One listing call per folder, not two. `walk_folders` + `list_images` ask the
+    same folder twice — once for its subfolders, once for its images — and on a
+    collection with a hundred folders that is a hundred avoidable round trips.
+    Here the subfolders and the files come out of the same paginated response,
+    which is the fewest calls the API allows: `in parents` only ever matches
+    direct children, so there is no query that returns a whole tree.
+
+    Yields empty folders too. A folder that vanished from the map because it
+    held nothing would be indistinguishable from one holding nothing but video.
+    """
+    queue = [(root_id, "")]
+    seen = {root_id}
+    while queue:
+        folder_id, prefix = queue.pop(0)
+        files = []
+        for child in _list_page(service, children_query(folder_id), MAP_FIELDS):
+            name = child.get("name") or ""
+            if child.get("mimeType") == FOLDER_MIME:
+                child_id = child.get("id")
+                if name == INDEX_FOLDER or child_id in seen:
+                    continue           # never our own index; never a shortcut loop
+                seen.add(child_id)
+                queue.append((child_id, f"{prefix}{name}/"))
+            else:
+                files.append({"name": name, "mime": child.get("mimeType"),
+                              "size": int(child.get("size") or 0)})
+        yield prefix, files
 
 
 def list_images(service, folder_id, recursive=True):

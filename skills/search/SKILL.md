@@ -144,3 +144,9 @@ from the picture, so open the finalists when the answer has to be visual.
    not abstractions ("cozy", "premium").
 4. If the collection looks stale, call the `lupa-index` skill to run an update
    before concluding that the image does not exist.
+5. Check whether the material was ever indexable at all. If
+   `~/.lupa/indexes/<collection>/MAP.md` exists, it lists every file type in the
+   collection **including the ones lupa cannot index** — video, PSD, PDF, Google
+   Docs. A subject that lives only in a `.mp4` is not missing from the index by
+   mistake; it was never eligible, and telling the user that is a real answer.
+   The file is written by `python -m lupa map`, which costs nothing to run.
