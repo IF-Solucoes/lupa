@@ -129,6 +129,47 @@ to fall back to any of them, so read that candidate with suspicion. The reason d
 not say which field matched — a term can come from the transcribed text rather than
 from the picture, so open the finalists when the answer has to be visual.
 
+## Look before you choose
+
+`lupa search` returns text. When the choice is about an image — which photo fits
+this piece — text is not enough: the ranking has already put a dog grooming shot
+at the top of a search for a clinic counter.
+
+```bash
+python -m lupa sheet "<terms>" --collection <collection> --limit 20 --out sheet.jpg
+```
+
+`--collection` and `--out` are required — there is no sheet across every
+collection at once, because the index it draws from is always inside one. `--limit`
+defaults to 20 and refuses anything past 24 with a readable message; a sheet that
+size is already too small to judge light and framing in.
+
+It writes `sheet.jpg`, with the candidates numbered, and `sheet.jpg.json` beside it,
+with the map from cell number to id. Open the sheet, choose by number, resolve the
+choice through the map.
+
+`--has-text` defaults to `false`, and that default should stay when the photo is
+headed to become raw material for a new piece: a published piece carries text baked
+into the pixels, and the generator copies that text into whatever it builds next.
+`--thumb-px` exists for a second, more enlarged pass over the finalists once the
+field is narrow.
+
+A cell drawn with a red outline and "indisponivel no Drive" is an image the index
+still lists but Drive no longer serves — the index has aged. A collection that was
+never indexed gets its own message, naming the path it looked for, instead of being
+folded into "nothing matched": those are different problems and call for different
+fixes (index it, versus try another query).
+
+## Bring the file down
+
+```bash
+python -m lupa fetch "<id, URL, or the line from the result>" --out <folder>
+```
+
+Downloads at full resolution, to disk. Only the chosen ones — the sheet already did
+the work of discarding the rest. Accepts a raw Drive id, a share URL, or the path
+exactly as the search result printed it.
+
 ## When the search finds nothing
 
 1. Read the collection's vocabulary: `~/.lupa/indexes/<collection>/INDEX.md` by
