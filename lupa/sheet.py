@@ -65,7 +65,10 @@ def build(items, fetch, out_path, thumb_px=None, cell=CELL_PX):
         thumb_px = DEFAULT_THUMB_PX
 
     # Refused before the fetcher runs, so an empty query costs no request.
-    columns, rows, positions, size = layout(len(items), cell=cell)
+    # columns and rows are geometry build() never needs directly -- every cell
+    # already has its (x, y) in `positions`, and `size` is the canvas they add
+    # up to.
+    _, _, positions, size = layout(len(items), cell=cell)
 
     try:
         from PIL import Image, ImageDraw
