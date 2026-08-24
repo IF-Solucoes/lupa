@@ -167,6 +167,28 @@ class TestSheetGuards(unittest.TestCase):
         self.assertNotIn("--limit", printed)
         self.assertIn("no index at", printed)
 
+    def test_a_negative_limit_is_refused_instead_of_reaching_sqlite_as_unbounded(self):
+        """Regression (I3): `args.limit > MAX_CELLS` alone lets --limit -1
+        through (-1 is not greater than 24). SQLite reads `LIMIT -1` as "no
+        limit at all", so fts.query would hand sheet.build() the whole
+        collection and layout() would raise the exact bare ValueError this
+        guard exists to prevent -- past main's try/except, which does not
+        know it."""
+        from lupa.sheet import MAX_CELLS
+
+        self.index_with([
+            {"id": str(n), "file": f"i{n}.png", "kind": "photo", "medium": "na",
+             "orientation": "landscape", "has_text": False,
+             "caption": "veterinary counter", "tags": ["veterinary", "counter"],
+             "text": ""}
+            for n in range(MAX_CELLS + 5)
+        ])
+
+        code, printed = self.run_sheet("--limit", "-1")
+        self.assertNotEqual(0, code)
+        self.assertNotIn("Traceback", printed)
+        self.assertIn("--limit", printed)
+
     def test_an_out_path_with_no_writable_extension_is_refused_up_front(self):
         """Regression (I2): `--out` had no validation of its own, so
         `--out folha` paid for every download in the query and only then died

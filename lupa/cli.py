@@ -893,9 +893,15 @@ def command_sheet(args):
     # bare ValueError past MAX_CELLS, and nothing upstream catches it — main's
     # try/except only knows IndexAlreadyExists and LockBusy. Left unchecked,
     # --limit 25 is a raw traceback instead of a sentence.
-    if args.limit > sheet.MAX_CELLS:
-        sys.exit(f"\n✋ --limit {args.limit} is more than a sheet holds "
-                 f"({sheet.MAX_CELLS}) — lower it and run again\n")
+    #
+    # The lower bound matters too: `> MAX_CELLS` alone lets --limit -1 through
+    # (-1 is not greater than 24), and SQLite reads `LIMIT -1` as "no limit at
+    # all" -- fts.query would then hand sheet.build() the entire collection,
+    # and layout() raises the exact traceback this guard exists to prevent.
+    if not 1 <= args.limit <= sheet.MAX_CELLS:
+        sys.exit(f"\n✋ --limit {args.limit} must be between 1 and "
+                 f"{sheet.MAX_CELLS} — a sheet holds at most "
+                 f"{sheet.MAX_CELLS} cells\n")
 
     # Also refused up front, before a single download runs: `--out` has no
     # validation of its own, and folha.save() only discovers a bad extension
