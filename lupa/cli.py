@@ -889,12 +889,30 @@ def command_sheet(args):
     from lupa import fts
     from lupa.drive import connect, fetch_thumbnail_by_id
 
+    # Refused before a single query runs: sheet.build's own layout() raises a
+    # bare ValueError past MAX_CELLS, and nothing upstream catches it — main's
+    # try/except only knows IndexAlreadyExists and LockBusy. Left unchecked,
+    # --limit 25 is a raw traceback instead of a sentence.
+    if args.limit > sheet.MAX_CELLS:
+        sys.exit(f"\n✋ --limit {args.limit} is more than a sheet holds "
+                 f"({sheet.MAX_CELLS}) — lower it and run again\n")
+
     env = config.environment()
     root = config.resolve_index_root(os.environ, env)
     collection = Path(root) / args.collection
+    db_path = collection / "index.db"
+
+    # fts.query answers an absent index.db with the same empty list as a
+    # search with no hit, so the two collapsed into one sentence — "nothing
+    # matched" read the same whether the collection was never indexed or was
+    # indexed and just had no match. Checked here, ahead of the query, so the
+    # unindexed case names the path it looked for instead of guessing why.
+    if not db_path.exists():
+        sys.exit(f"\n✋ no index at {db_path} — \"{args.collection}\" has not "
+                 f"been indexed yet: lupa index {args.collection}\n")
 
     filters = {"has_text": args.has_text == "true"}
-    items = fts.query(collection / "index.db", args.query, filters, args.limit)
+    items = fts.query(db_path, args.query, filters, args.limit)
     if not items:
         print(f"  nothing matched \"{args.query}\" in {args.collection}")
         return

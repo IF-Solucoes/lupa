@@ -62,6 +62,133 @@ class TestSheetParser(unittest.TestCase):
             build_parser().parse_args(["sheet", "x", "--out", "/tmp/f.jpg"])
 
 
+class TestSheetGuards(unittest.TestCase):
+    """`command_sheet` refuses two things sheet.build cannot refuse cleanly.
+
+    layout() raises a bare ValueError past MAX_CELLS, and nothing upstream
+    catches it -- main's try/except only knows IndexAlreadyExists and
+    LockBusy -- so an unchecked --limit reached the user as a raw traceback
+    instead of a sentence. And fts.query answers a missing index.db with the
+    same empty list as a real search with no hit, so "nothing matched" used
+    to mean two different things: never indexed, or indexed and just missed.
+    """
+
+    KEYS = ("LUPA_ENV", "LUPA_CONFIG", "LUPA_INDEXES", "LUPA_STATE_DIR")
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.saved = {key: os.environ.pop(key, None) for key in self.KEYS}
+        self.home = Path(tempfile.mkdtemp(prefix="lupa-sheet-guard-"))
+
+        env_file = self.home / "lupa.env"
+        env_file.write_text("GEMINI_API_KEY=abc\n", encoding="utf-8")
+        os.environ["LUPA_ENV"] = str(env_file)
+        os.environ["LUPA_CONFIG"] = str(self.home / "collections.json")
+        os.environ["LUPA_INDEXES"] = str(self.home / "indexes")
+
+    def tearDown(self):
+        import os
+        import shutil
+
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def run_sheet(self, *extra):
+        """Runs `lupa sheet`. Returns (exit code, everything printed)."""
+        import contextlib
+        import io
+
+        from lupa import cli
+
+        printed, code = io.StringIO(), 0
+        try:
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    cli.main(["sheet", "veterinary counter", "--collection", "cvn",
+                              "--out", str(self.home / "f.jpg"), *extra])
+                except SystemExit as stop:
+                    if isinstance(stop.code, int) or stop.code is None:
+                        code = stop.code or 0
+                    else:
+                        code = 1
+                        print(stop.code)
+        finally:
+            pass
+        return code, printed.getvalue()
+
+    def index_with(self, catalog):
+        """A real, queryable index.db for collection "cvn" -- no network."""
+        from lupa.fts import build
+
+        index_dir = self.home / "indexes" / "cvn"
+        index_dir.mkdir(parents=True, exist_ok=True)
+        build(catalog, index_dir / "index.db")
+
+    def test_a_limit_over_max_cells_is_refused_with_a_sentence(self):
+        """Anti-traceback, reproduced with the real crash path: an index with
+        more matches than a sheet holds. Without the guard, fts.query hands
+        sheet.build() more items than MAX_CELLS and layout() raises a bare
+        ValueError that nothing upstream catches -- this call would then
+        raise out of cli.main() instead of exiting cleanly.
+        """
+        from lupa.sheet import MAX_CELLS
+
+        self.index_with([
+            {"id": str(n), "file": f"i{n}.png", "kind": "photo", "medium": "na",
+             "orientation": "landscape", "has_text": False,
+             "caption": "veterinary counter", "tags": ["veterinary", "counter"],
+             "text": ""}
+            for n in range(MAX_CELLS + 5)
+        ])
+
+        code, printed = self.run_sheet("--limit", str(MAX_CELLS + 1))
+        self.assertNotEqual(0, code)
+        self.assertNotIn("Traceback", printed)
+        self.assertIn(str(MAX_CELLS), printed)
+        self.assertIn("--limit", printed)
+
+    def test_a_limit_at_max_cells_is_not_refused_by_the_guard(self):
+        """Anti-tautology: the guard must not fire below its own ceiling.
+
+        No index exists for "cvn" here, so this still exits -- but on the
+        missing-index message, not the limit one, proving the limit check
+        itself let a valid value through.
+        """
+        from lupa.sheet import MAX_CELLS
+
+        code, printed = self.run_sheet("--limit", str(MAX_CELLS))
+        self.assertNotEqual(0, code)
+        self.assertNotIn("--limit", printed)
+        self.assertIn("no index at", printed)
+
+    def test_a_collection_never_indexed_names_the_path_it_looked_for(self):
+        code, printed = self.run_sheet()
+        self.assertNotEqual(0, code)
+        self.assertIn("no index at", printed)
+        self.assertIn(str(self.home / "indexes" / "cvn" / "index.db"), printed)
+        self.assertIn("lupa index", printed)
+
+    def test_an_indexed_collection_with_no_hit_still_says_nothing_matched(self):
+        """The other half of the distinction: a real index that just missed
+        must not be mistaken, by the message, for a collection never indexed."""
+        self.index_with([
+            {"id": "1", "file": "bridge.png", "kind": "design", "medium": "digital",
+             "orientation": "portrait", "has_text": False,
+             "caption": "a stone bridge over a river", "tags": ["bridge"],
+             "text": ""},
+        ])
+        code, printed = self.run_sheet()
+        self.assertEqual(0, code)
+        self.assertIn("nothing matched", printed)
+        self.assertNotIn("no index at", printed)
+
+
 if __name__ == "__main__":
     unittest.main()
 
