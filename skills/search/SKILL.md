@@ -1,13 +1,17 @@
 ---
 name: lupa-search
 description: >-
-  Use WHENEVER you need to find images in a collection already indexed by lupa —
-  "find a photo of X", "what references do we have for Y", "I need a portrait image
-  with no text", "what is in the collection about Z". It queries the text index and
-  returns a few candidates with links and reasons, without opening a single image.
-  Use this INSTEAD of listing a Drive folder or looking at images one by one — that
-  is the difference between spending cents and spending dollars. Do NOT use to create
-  or update the index (skill lupa-index).
+  Use WHENEVER you need images from a collection already indexed by lupa — find
+  them, choose visually between finalists, or bring the chosen file to disk. For
+  finding: "find a photo of X", "what references do we have for Y", "I need a
+  portrait image with no text", "what is in the collection about Z" — it queries
+  the text index and returns candidates with links and reasons; reading text
+  instead of opening images is most of the difference between spending cents and
+  spending dollars. When text cannot decide — "which of these fits this piece" —
+  build a numbered contact sheet instead of opening candidates one by one (`lupa
+  sheet`), then bring the winner to disk (`lupa fetch`). Use this INSTEAD of
+  listing a Drive folder or looking at images one by one. Do NOT use to create or
+  update the index (skill lupa-index).
 ---
 
 # lupa · search
@@ -133,7 +137,8 @@ from the picture, so open the finalists when the answer has to be visual.
 
 `lupa search` returns text. When the choice is about an image — which photo fits
 this piece — text is not enough: the ranking has already put a dog grooming shot
-at the top of a search for a clinic counter.
+at the top of a search for a clinic counter. Neither `sheet` nor `fetch` has an
+MCP form — command line only, unlike `search`/`status` above.
 
 ```bash
 python -m lupa sheet "<terms>" --collection <collection> --limit 20 --out sheet.jpg
@@ -163,12 +168,13 @@ fixes (index it, versus try another query).
 ## Bring the file down
 
 ```bash
-python -m lupa fetch "<id, URL, or the line from the result>" --out <folder>
+python -m lupa fetch "<id, URL, or a path>" --out <folder>
 ```
 
 Downloads at full resolution, to disk. Only the chosen ones — the sheet already did
-the work of discarding the rest. Accepts a raw Drive id, a share URL, or the path
-exactly as the search result printed it.
+the work of discarding the rest. Accepts a raw Drive id, a share URL, or a path —
+either the `file` field `lupa search` printed, or the id in a `sheet.jpg.json` cell
+(pass the id straight through; a path is only for what `search` printed).
 
 ## When the search finds nothing
 
