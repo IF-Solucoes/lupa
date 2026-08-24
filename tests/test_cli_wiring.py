@@ -167,6 +167,25 @@ class TestSheetGuards(unittest.TestCase):
         self.assertNotIn("--limit", printed)
         self.assertIn("no index at", printed)
 
+    def test_missing_oauth_client_is_refused_before_connect_is_attempted(self):
+        """Regression (I4): `sheet` was the only verb besides `map` that
+        touches the Drive without command_index's preflight in front of it.
+        Without this guard, no token on disk and no LUPA_OAUTH_CLIENT fell
+        through to
+        InstalledAppFlow.from_client_secrets_file(str(Path(None).expanduser())),
+        a raw TypeError from inside pathlib. setUp() here already leaves
+        LUPA_OAUTH_CLIENT unset."""
+        self.index_with([
+            {"id": "1", "file": "bridge.png", "kind": "design", "medium": "digital",
+             "orientation": "portrait", "has_text": False,
+             "caption": "veterinary counter", "tags": ["veterinary"],
+             "text": ""},
+        ])
+        code, printed = self.run_sheet()
+        self.assertNotEqual(0, code)
+        self.assertNotIn("Traceback", printed)
+        self.assertIn("No Google Drive access", printed)
+
     def test_a_negative_limit_is_refused_instead_of_reaching_sqlite_as_unbounded(self):
         """Regression (I3): `args.limit > MAX_CELLS` alone lets --limit -1
         through (-1 is not greater than 24). SQLite reads `LIMIT -1` as "no

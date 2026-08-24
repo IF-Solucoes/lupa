@@ -932,6 +932,23 @@ def command_sheet(args):
         print(f"  nothing matched \"{args.query}\" in {args.collection}")
         return
 
+    # `sheet` is the only verb besides `map` that touches the Drive without
+    # going through command_index's preflight. Without this, a machine with
+    # no token on disk and no LUPA_OAUTH_CLIENT fell through to
+    # InstalledAppFlow.from_client_secrets_file(str(Path(None).expanduser())) —
+    # a raw TypeError from inside pathlib. Same guard command_map already
+    # has, same message: it teaches the fix instead of inventing a new one.
+    client = env.get("LUPA_OAUTH_CLIENT")
+    if not (client and Path(client).expanduser().exists()):
+        sys.exit(
+            f"\nNo Google Drive access: no OAuth client at "
+            f"{client or '(not configured)'}\n"
+            "  At https://console.cloud.google.com :\n"
+            "    1. enable the Google Drive API on your project\n"
+            "    2. Credentials → Create → OAuth client ID → Desktop app\n"
+            "    3. download the JSON and save it as the LUPA_OAUTH_CLIENT path\n"
+            "  A local folder needs none of this — pass a path instead.\n")
+
     _, credentials = connect(env.get("LUPA_OAUTH_CLIENT"),
                              env.get("LUPA_OAUTH_TOKEN"), with_credentials=True)
 
