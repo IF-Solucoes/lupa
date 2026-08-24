@@ -68,5 +68,26 @@ class TestTokenEstimate(unittest.TestCase):
         self.assertGreater(INPUT_TOKENS_PER_IMAGE, 1000)
 
 
+class TestDriveThumbnailById(unittest.TestCase):
+    """The catalog keeps the id and drops the thumbnail link, so the id is all
+    there is to build a thumbnail URL from."""
+
+    def test_it_builds_the_documented_url(self):
+        from lupa.thumbnail import by_id
+        self.assertEqual(
+            by_id("1ICmcCoN0VXnVcJDVp86pe_gpmxRjfbzo"),
+            "https://drive.google.com/thumbnail"
+            "?id=1ICmcCoN0VXnVcJDVp86pe_gpmxRjfbzo&sz=w400")
+
+    def test_the_size_is_honored(self):
+        from lupa.thumbnail import by_id
+        self.assertTrue(by_id("abc", size=800).endswith("&sz=w800"))
+
+    def test_no_id_returns_nothing(self):
+        from lupa.thumbnail import by_id
+        self.assertIsNone(by_id(""))
+        self.assertIsNone(by_id(None))
+
+
 if __name__ == "__main__":
     unittest.main()

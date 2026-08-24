@@ -12,6 +12,15 @@ import re
 
 MAX_EDGE_PX = 768
 
+# The size a contact sheet cell wants. Measured on a 260px cell: w400 gives the
+# cell room to be centered without upscaling, at 37 KB per image.
+DEFAULT_THUMB_PX = 400
+
+# Drive answers this endpoint with only the file id and a bearer token — no
+# metadata round trip, and no dependency on `thumbnailLink`, which the catalog
+# captures and then drops before writing catalog.jsonl.
+DRIVE_THUMBNAIL = "https://drive.google.com/thumbnail"
+
 # Google's image links end in a size directive: =s220, =w200-h150, =s512-c ...
 SIZE_SUFFIX = re.compile(r"=[swh]\d+(-[a-z0-9]+)*$")
 
@@ -21,6 +30,13 @@ def thumbnail_url(link, size=MAX_EDGE_PX):
     if not link:
         return None
     return f"{SIZE_SUFFIX.sub('', str(link))}=s{size}"
+
+
+def by_id(file_id, size=DEFAULT_THUMB_PX):
+    """The thumbnail URL for a Drive file id. None when there is no id."""
+    if not file_id:
+        return None
+    return f"{DRIVE_THUMBNAIL}?id={file_id}&sz=w{size}"
 
 
 def needs_downscale(width, height, limit=MAX_EDGE_PX):
