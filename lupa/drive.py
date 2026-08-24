@@ -246,6 +246,39 @@ def fetch_thumbnail(credentials, link, size=None):
         return response.read()
 
 
+def fetch_thumbnail_by_id(credentials, file_id, size=None, opener=None):
+    """Thumbnail bytes for a Drive file id, or None.
+
+    Takes only the id, because `thumbnailLink` is captured by normalize_file and
+    then dropped before catalog.jsonl is written — asking Drive for it again
+    would be one metadata round trip per image, per sheet.
+
+    Never raises: a sheet with a gap in it is worth more than no sheet, and the
+    gap is what tells the reader the index has aged.
+    """
+    import urllib.request
+
+    from lupa.thumbnail import by_id
+
+    url = by_id(file_id, size) if size else by_id(file_id)
+    if not url:
+        return None
+
+    if opener is None:
+        from google.auth.transport.requests import Request
+        if not credentials.valid:
+            credentials.refresh(Request())
+        opener = urllib.request.urlopen
+
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {credentials.token}"})
+    try:
+        with opener(request, timeout=60) as response:
+            return response.read()
+    except Exception:
+        return None
+
+
 def download(service, file_id, destination):
     """Fetches one file to local disk (a working copy for the vision model)."""
     from pathlib import Path

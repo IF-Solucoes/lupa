@@ -387,3 +387,57 @@ class TestANameWithAnApostropheDoesNotBreakTheQuery(unittest.TestCase):
         ensure_folder(service, "PARENT", "by-entity")
         self.assertIn("name = 'by-entity'", service.queries[0])
         self.assertNotIn("\\", service.queries[0])
+
+
+class TestFetchThumbnailById(unittest.TestCase):
+    """The URL is asserted, never requested: this suite does not use the network."""
+
+    def test_a_missing_id_never_reaches_the_network(self):
+        from lupa.drive import fetch_thumbnail_by_id
+
+        def explode(*_a, **_k):
+            raise AssertionError("no request should have been made")
+
+        self.assertIsNone(fetch_thumbnail_by_id(object(), "", opener=explode))
+
+    def test_it_asks_for_the_url_thumbnail_by_id_builds(self):
+        from lupa.drive import fetch_thumbnail_by_id
+        vistos = []
+
+        class Cred:
+            valid = True
+            token = "tok"
+
+        def opener(request, timeout=None):
+            vistos.append((request.full_url,
+                           request.get_header("Authorization")))
+
+            class Resposta:
+                def read(self):
+                    return b"\xff\xd8bytes"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return Resposta()
+
+        dados = fetch_thumbnail_by_id(Cred(), "abc", size=800, opener=opener)
+        self.assertEqual(dados, b"\xff\xd8bytes")
+        self.assertEqual(
+            vistos,
+            [("https://drive.google.com/thumbnail?id=abc&sz=w800", "Bearer tok")])
+
+    def test_a_thumbnail_drive_refuses_comes_back_as_none(self):
+        from lupa.drive import fetch_thumbnail_by_id
+
+        class Cred:
+            valid = True
+            token = "tok"
+
+        def opener(*_a, **_k):
+            raise OSError("404")
+
+        self.assertIsNone(fetch_thumbnail_by_id(Cred(), "abc", opener=opener))
