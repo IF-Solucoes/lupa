@@ -167,6 +167,50 @@ class TestSheetGuards(unittest.TestCase):
         self.assertNotIn("--limit", printed)
         self.assertIn("no index at", printed)
 
+    def test_missing_pillow_is_refused_before_any_sign_in_is_attempted(self):
+        """Regression (I6): without this order, `sheet` would open the Drive
+        sign-in browser (or, here, reach drive.connect at all) before ever
+        importing PIL -- sheet.build() only imports it after the download
+        loop finishes, and OAuth is not even configured in this test, so
+        connect() must never be reached: if the Pillow check ran after the
+        OAuth guard, this test would still exit non-zero, but on the OAuth
+        message instead of the Pillow one.
+        """
+        import builtins
+
+        import lupa.drive as drive_module
+
+        self.index_with([
+            {"id": "1", "file": "bridge.png", "kind": "design", "medium": "digital",
+             "orientation": "portrait", "has_text": False,
+             "caption": "veterinary counter", "tags": ["veterinary"],
+             "text": ""},
+        ])
+
+        real_import = builtins.__import__
+
+        def no_pillow(name, *rest):
+            if name == "PIL" or name.startswith("PIL."):
+                raise ImportError("no PIL here")
+            return real_import(name, *rest)
+
+        def explode(*_a, **_k):
+            raise AssertionError("connect() must not be reached without Pillow")
+
+        original_connect = drive_module.connect
+        builtins.__import__ = no_pillow
+        drive_module.connect = explode
+        try:
+            code, printed = self.run_sheet()
+        finally:
+            builtins.__import__ = real_import
+            drive_module.connect = original_connect
+
+        self.assertNotEqual(0, code)
+        self.assertNotIn("Traceback", printed)
+        self.assertIn("Pillow", printed)
+        self.assertNotIn("No Google Drive access", printed)
+
     def test_missing_oauth_client_is_refused_before_connect_is_attempted(self):
         """Regression (I4): `sheet` was the only verb besides `map` that
         touches the Drive without command_index's preflight in front of it.

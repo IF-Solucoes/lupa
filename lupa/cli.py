@@ -932,6 +932,16 @@ def command_sheet(args):
         print(f"  nothing matched \"{args.query}\" in {args.collection}")
         return
 
+    # Checked before signing in, not after: without this, the order was query
+    # -> connect() (which can open a browser and block on a sign-in) -> build
+    # -> only then does sheet.build()'s own `from PIL import Image` fail. A
+    # person would sign in to Google to be told a Python library is missing.
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        sys.exit("\n✋ Pillow is not installed — `sheet` needs it to draw the "
+                 "grid: pip install Pillow\n")
+
     # `sheet` is the only verb besides `map` that touches the Drive without
     # going through command_index's preflight. Without this, a machine with
     # no token on disk and no LUPA_OAUTH_CLIENT fell through to
