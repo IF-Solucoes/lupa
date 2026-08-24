@@ -230,6 +230,43 @@ class TestConsequentialFlagsAreDocumented(unittest.TestCase):
              "that has to offer it"] + missing))
 
 
+class TestSheetFiltersAreScopedInTheDocs(unittest.TestCase):
+    """Regression (I5): the filters table under "keep junk out of the result"
+    presents `--kind`, `--medium`, `--orientation` and `--has-text` as if all
+    four apply everywhere they are shown. `sheet` only has `--has-text` --
+    `--kind photo` on a `sheet` command is `unrecognized arguments`, not a
+    no-op -- and `test_every_documented_filter_is_a_flag_of_lupa_search` above
+    never catches it: it checks the table against `search`, and `sheet` never
+    appears in a "Filter" table at all.
+
+    `sheet` also re-runs the query with its own defaults (`--limit 20`,
+    `--has-text false`, against search's `--limit 15`, no filter), so a sheet's
+    cell numbers do not correspond to a `search` result read moments earlier --
+    a fact the docs used to never state.
+    """
+
+    def test_sheet_really_only_has_has_text_of_the_four(self):
+        """Anti-tautology: pins down the actual gap the doc fix protects against."""
+        parser = real_parser()
+        sheet_flags = long_flags_of(subcommands(parser)["sheet"])
+        self.assertNotIn("--kind", sheet_flags)
+        self.assertNotIn("--medium", sheet_flags)
+        self.assertNotIn("--orientation", sheet_flags)
+        self.assertIn("--has-text", sheet_flags)
+
+    def test_the_search_skill_scopes_the_filter_table_to_search(self):
+        text = read(REPO / "skills" / "search" / "SKILL.md")
+        self.assertIn("only `--has-text` is available", text,
+                      "the search skill no longer tells an agent that sheet "
+                      "accepts none of --kind/--medium/--orientation")
+
+    def test_the_search_skill_says_sheet_redoes_the_query(self):
+        text = read(REPO / "skills" / "search" / "SKILL.md")
+        self.assertIn("REDOES the query", text,
+                      "the search skill no longer warns that a sheet's cell "
+                      "numbers are not search's result numbers")
+
+
 class TestDocumentedErrorsExist(unittest.TestCase):
     """Symptoms promised by a 'Common errors' table must be real strings.
 

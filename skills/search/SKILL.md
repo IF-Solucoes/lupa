@@ -59,7 +59,10 @@ type:
 | `has_text` | `true` `false` | `false` returns clean images with no baked-in type |
 
 On the command line the same four are flags: `--kind`, `--medium`, `--orientation`,
-`--has-text true|false` (`--has_text` is accepted too).
+`--has-text true|false` (`--has_text` is accepted too) — but that is true of
+`search` only. `sheet`, below, accepts none of the first three: `--kind photo` on
+a `sheet` command is `unrecognized arguments`, not a quiet no-op. Its only filter
+is `--has-text`.
 
 Requests these actually solve:
 
@@ -144,14 +147,32 @@ MCP form — command line only, unlike `search`/`status` above.
 python -m lupa sheet "<terms>" --collection <collection> --limit 20 --out sheet.jpg
 ```
 
+`sheet` REDOES the query — it does not draw the sheet from a `search` you already
+ran, and the two do not share defaults. `search` defaults to `--limit 15` and no
+`--has-text` filter; `sheet` defaults to `--limit 20` and `--has-text false`. A
+query that read 15 results from `search` can read a different set, in a different
+order, from `sheet`. So the numbers printed on a sheet are cell numbers on THAT
+sheet only — they are not a re-numbering of what `search` printed, and a cell
+chosen by number has to be resolved through that sheet's own `.json` map, never by
+matching position back to the earlier `search` output. Of the four filters in the
+table above, only `--has-text` is available here.
+
 `--collection` and `--out` are required — there is no sheet across every
 collection at once, because the index it draws from is always inside one. `--limit`
-defaults to 20 and refuses anything past 24 with a readable message; a sheet that
-size is already too small to judge light and framing in.
+defaults to 20 and refuses anything outside 1-24 with a readable message; a sheet
+that size is already too small to judge light and framing in.
 
-It writes `sheet.jpg`, with the candidates numbered, and `sheet.jpg.json` beside it,
-with the map from cell number to id. Open the sheet, choose by number, resolve the
-choice through the map.
+Requires Pillow (`pip install Pillow`); lupa checks and says so before it ever
+asks for a Google sign-in, not after.
+
+It writes `sheet.jpg`, with the candidates numbered, and `sheet.jpg.json` beside
+it: one object per cell, with four keys. `celula` is the number printed under the
+thumbnail; `id` is the Drive file id, the value `fetch` takes directly; `caption`
+is the indexed caption (English); `disponivel` is `true` when the thumbnail
+rendered and `false` for a red-outlined placeholder cell. `celula` and
+`disponivel` are named in Portuguese, `id` and `caption` in English — reading only
+the English pair will not suggest `celula`, so expect all four by name rather than
+guessing. Open the sheet, choose by number, resolve the choice through the map.
 
 `--has-text` defaults to `false`, and that default should stay when the photo is
 headed to become raw material for a new piece: a published piece carries text baked
