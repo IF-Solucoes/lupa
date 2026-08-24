@@ -1112,7 +1112,11 @@ def build_parser():
     sheeter = sub.add_parser(
         "sheet", help="a numbered contact sheet for a query, to look at")
     sheeter.add_argument("query")
-    sheeter.add_argument("--collection")
+    sheeter.add_argument("--collection", required=True,
+                         help="which index to search — unlike `search`, "
+                              "there is no folha across every collection, "
+                              "because the index.db resolved is always "
+                              "inside one")
     sheeter.add_argument("--out", required=True, metavar="PATH",
                          help="where to write the sheet (a .json map is written "
                               "beside it)")

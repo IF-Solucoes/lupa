@@ -50,8 +50,16 @@ class TestSheetParser(unittest.TestCase):
     def test_the_limit_defaults_to_a_readable_sheet(self):
         from lupa.cli import build_parser
         from lupa.sheet import MAX_CELLS
-        args = build_parser().parse_args(["sheet", "x", "--out", "/tmp/f.jpg"])
+        args = build_parser().parse_args(
+            ["sheet", "x", "--collection", "cvn", "--out", "/tmp/f.jpg"])
         self.assertLessEqual(args.limit, MAX_CELLS)
+
+    def test_sheet_exige_a_colecao(self):
+        """Diferente de `search`, nao existe folha "de todas as colecoes": o
+        index.db resolvido em command_sheet esta sempre dentro de uma so."""
+        from lupa.cli import build_parser
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["sheet", "x", "--out", "/tmp/f.jpg"])
 
 
 if __name__ == "__main__":
