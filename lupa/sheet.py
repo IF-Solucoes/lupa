@@ -73,12 +73,27 @@ def build(items, fetch, out_path, thumb_px=None, cell=CELL_PX):
 
     for indice, (item, (x, y)) in enumerate(zip(items, positions), start=1):
         dados = fetch(item.get("id"), thumb_px)
+        disponivel = False
         if dados:
-            miniatura = Image.open(io.BytesIO(dados)).convert("RGB")
-            miniatura.thumbnail((cell, cell))
-            folha.paste(miniatura, (x + (cell - miniatura.width) // 2,
-                                    y + (cell - miniatura.height) // 2))
-        else:
+            # `drive.google.com/thumbnail` is a web endpoint, not the API: a
+            # file the account cannot see, or one Google never rendered a
+            # thumbnail for, answers HTTP 200 with an HTML page instead of an
+            # error. Those bytes are truthy, so without this guard Image.open
+            # raises UnidentifiedImageError here -- after every other
+            # candidate already paid for its download, and past main's
+            # try/except, which only knows IndexAlreadyExists and LockBusy.
+            # Caught and folded into the same placeholder path as a `None`
+            # from fetch: a sheet with a hole in it beats no sheet at all.
+            try:
+                miniatura = Image.open(io.BytesIO(dados)).convert("RGB")
+                miniatura.thumbnail((cell, cell))
+                folha.paste(miniatura, (x + (cell - miniatura.width) // 2,
+                                        y + (cell - miniatura.height) // 2))
+                disponivel = True
+            except Exception:
+                pass
+
+        if not disponivel:
             faltando += 1
             desenho.rectangle([x, y, x + cell, y + cell],
                               outline=MISSING_COLOR, width=2)
@@ -88,7 +103,7 @@ def build(items, fetch, out_path, thumb_px=None, cell=CELL_PX):
         desenho.text((x + 4, y + cell + 4), f"{indice:02d}", fill=LABEL_COLOR)
         celulas.append({"celula": indice, "id": item.get("id"),
                         "caption": item.get("caption", ""),
-                        "disponivel": bool(dados)})
+                        "disponivel": disponivel})
 
     destino = Path(out_path)
     destino.parent.mkdir(parents=True, exist_ok=True)

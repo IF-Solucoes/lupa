@@ -441,3 +441,61 @@ class TestFetchThumbnailById(unittest.TestCase):
             raise OSError("404")
 
         self.assertIsNone(fetch_thumbnail_by_id(Cred(), "abc", opener=opener))
+
+    def test_an_html_response_never_reaches_the_caller_as_image_bytes(self):
+        """Regression (C1): `/thumbnail` is a web endpoint, not the API -- a
+        file this account cannot see, or one Drive never generated a thumbnail
+        for, answers HTTP 200 with an HTML page instead of an error. Checked by
+        Content-Type, the one place this function can tell before the caller
+        ever sees the bytes."""
+        from lupa.drive import fetch_thumbnail_by_id
+
+        class Cred:
+            valid = True
+            token = "tok"
+
+        class Headers:
+            def get(self, name, default=""):
+                return "text/html; charset=utf-8" if name == "Content-Type" else default
+
+        class Resposta:
+            headers = Headers()
+
+            def read(self):
+                raise AssertionError("the body of a non-image response should "
+                                     "never be read")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(*_a, **_k):
+            return Resposta()
+
+        self.assertIsNone(fetch_thumbnail_by_id(Cred(), "abc", opener=opener))
+
+    def test_a_response_with_no_headers_attribute_is_still_read(self):
+        """Anti-tautology: the fakes every other test in this class uses have
+        no `.headers` at all, and must keep working -- the Content-Type gate
+        only fires when it has an answer, never on its absence."""
+        from lupa.drive import fetch_thumbnail_by_id
+
+        class Cred:
+            valid = True
+            token = "tok"
+
+        class Resposta:
+            def read(self):
+                return b"\xff\xd8bytes"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        self.assertEqual(
+            fetch_thumbnail_by_id(Cred(), "abc", opener=lambda *a, **k: Resposta()),
+            b"\xff\xd8bytes")

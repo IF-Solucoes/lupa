@@ -274,6 +274,16 @@ def fetch_thumbnail_by_id(credentials, file_id, size=None, opener=None):
         url, headers={"Authorization": f"Bearer {credentials.token}"})
     try:
         with opener(request, timeout=60) as response:
+            # `/thumbnail` is a web endpoint, not the API: a file this account
+            # cannot see, or one Drive never rendered a thumbnail for, answers
+            # HTTP 200 with an HTML page rather than an error. Checked here,
+            # where the response is in hand -- sheet.build() still guards
+            # against a non-image body reaching Image.open, but a gap caught
+            # this early never even gets treated as a downloaded thumbnail.
+            headers = getattr(response, "headers", None)
+            content_type = headers.get("Content-Type", "") if headers is not None else ""
+            if content_type and not content_type.startswith("image/"):
+                return None
             return response.read()
     except Exception:
         return None

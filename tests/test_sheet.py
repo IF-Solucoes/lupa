@@ -109,6 +109,36 @@ class TestBuild(unittest.TestCase):
             build([], lambda file_id, px: _jpeg(), self.out)
         self.assertFalse(Path(self.out).exists())
 
+    def test_an_html_page_instead_of_a_thumbnail_becomes_a_placeholder(self):
+        """Regression (C1): `drive.google.com/thumbnail` is a web endpoint, not
+        the API. A file the account cannot see, or one Drive never rendered a
+        thumbnail for, answers HTTP 200 with an HTML page -- truthy bytes that
+        used to reach Image.open() unguarded and raise UnidentifiedImageError
+        after every other candidate had already been downloaded, with no sheet
+        written at all."""
+        from lupa.sheet import build
+
+        report = build(ITEMS, lambda file_id, px: b"<html>not an image</html>",
+                       self.out)
+
+        self.assertTrue(Path(self.out).exists())
+        self.assertEqual(report["missing"], len(ITEMS))
+        self.assertEqual(len(report["cells"]), len(ITEMS))
+        self.assertTrue(all(not c["disponivel"] for c in report["cells"]))
+
+    def test_a_mix_of_html_and_real_images_only_marks_the_html_ones_missing(self):
+        """Anti-tautology: the guard must not swallow the good thumbnails too."""
+        from lupa.sheet import build
+
+        def fetch(file_id, px):
+            return b"<html>oops</html>" if file_id == "id2" else _jpeg()
+
+        report = build(ITEMS, fetch, self.out)
+
+        self.assertEqual(report["missing"], 1)
+        ausente = [c for c in report["cells"] if not c["disponivel"]]
+        self.assertEqual([c["id"] for c in ausente], ["id2"])
+
 
 class TestBuildWithoutPillow(unittest.TestCase):
     def test_it_reports_instead_of_raising(self):
