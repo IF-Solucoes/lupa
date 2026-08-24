@@ -34,6 +34,26 @@ class TestIndexRootWiring(unittest.TestCase):
         self.assertNotIn("resolve_index_root({}", source)
 
 
+class TestSheetParser(unittest.TestCase):
+    def test_the_parser_accepts_sheet_with_its_filters(self):
+        from lupa.cli import build_parser
+        args = build_parser().parse_args(
+            ["sheet", "veterinary counter", "--collection", "cvn",
+             "--limit", "20", "--out", "/tmp/f.jpg", "--has-text", "false"])
+        self.assertEqual(args.command, "sheet")
+        self.assertEqual(args.query, "veterinary counter")
+        self.assertEqual(args.collection, "cvn")
+        self.assertEqual(args.limit, 20)
+        self.assertEqual(args.out, "/tmp/f.jpg")
+        self.assertEqual(args.has_text, "false")
+
+    def test_the_limit_defaults_to_a_readable_sheet(self):
+        from lupa.cli import build_parser
+        from lupa.sheet import MAX_CELLS
+        args = build_parser().parse_args(["sheet", "x", "--out", "/tmp/f.jpg"])
+        self.assertLessEqual(args.limit, MAX_CELLS)
+
+
 if __name__ == "__main__":
     unittest.main()
 

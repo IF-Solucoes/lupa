@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lupa import caption, config, gemini, inflight
+from lupa import caption, config, gemini, inflight, sheet
 from lupa.build import writing_atomically
 from lupa.guards import IndexAlreadyExists, LockBusy, needs_cost_confirmation
 from lupa.mcp import Server
@@ -882,6 +882,47 @@ def command_search(args):
                               "limit": args.limit, **filters}))
 
 
+def command_sheet(args):
+    """Search, then draw. The agent reads one image instead of twenty."""
+    import json
+
+    from lupa import fts
+    from lupa.drive import connect, fetch_thumbnail_by_id
+
+    env = config.environment()
+    root = config.resolve_index_root(os.environ, env)
+    collection = Path(root) / args.collection
+
+    filters = {"has_text": args.has_text == "true"}
+    items = fts.query(collection / "index.db", args.query, filters, args.limit)
+    if not items:
+        print(f"  nothing matched \"{args.query}\" in {args.collection}")
+        return
+
+    _, credentials = connect(env.get("LUPA_OAUTH_CLIENT"),
+                             env.get("LUPA_OAUTH_TOKEN"), with_credentials=True)
+
+    report = sheet.build(
+        items,
+        lambda file_id, px: fetch_thumbnail_by_id(credentials, file_id, px),
+        args.out, thumb_px=args.thumb_px)
+
+    if report.get("skipped"):
+        sys.exit(f"\n✋ {report['skipped']}\n")
+
+    mapa = Path(args.out + ".json")
+    mapa.write_text(json.dumps(report["cells"], ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+
+    reason = items[0].get("_reason", "?")
+    print(f"  {len(items)} candidates, matched on {reason}")
+    print(f"  sheet  {report['out']}")
+    print(f"  map    {mapa}")
+    if report["missing"]:
+        print(f"  {report['missing']} thumbnail(s) Drive would not give — "
+              "the index may have aged")
+
+
 def command_fetch(args):
     """Traz para o disco os arquivos que a busca achou.
 
@@ -1068,6 +1109,23 @@ def build_parser():
                              "false only the clean ones")
     finder.add_argument("--limit", type=int, default=15)
 
+    sheeter = sub.add_parser(
+        "sheet", help="a numbered contact sheet for a query, to look at")
+    sheeter.add_argument("query")
+    sheeter.add_argument("--collection")
+    sheeter.add_argument("--out", required=True, metavar="PATH",
+                         help="where to write the sheet (a .json map is written "
+                              "beside it)")
+    sheeter.add_argument("--limit", type=int, default=20,
+                         help=f"how many candidates (at most {sheet.MAX_CELLS})")
+    sheeter.add_argument("--has-text", "--has_text", dest="has_text",
+                         choices=("true", "false"), default="false",
+                         help="defaults to false: a piece with text baked in "
+                              "teaches the generator to copy that text")
+    sheeter.add_argument("--thumb-px", dest="thumb_px", type=int, default=None,
+                         help="thumbnail width; raise it for a second pass over "
+                              "the finalists")
+
     # Its own subcommand, sharing nothing with the loop above on purpose. `map`
     # spends no money and describes no image, so every flag that guards spending
     # would be a lie here — and inheriting them is how a command ends up
@@ -1125,6 +1183,8 @@ def main(argv=None):
             command_publish(args)
         elif args.command == "search":
             command_search(args)
+        elif args.command == "sheet":
+            command_sheet(args)
         elif args.command == "fetch":
             command_fetch(args)
         elif args.command == "forget":
