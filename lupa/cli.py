@@ -1011,9 +1011,7 @@ def prepare_output_streams():
             pass
 
 
-def main(argv=None):
-    prepare_output_streams()
-
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="lupa", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1105,7 +1103,13 @@ def main(argv=None):
     forget.add_argument("--delete-index", action="store_true",
                         help="also delete the local index directory")
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None):
+    prepare_output_streams()
+
+    args = build_parser().parse_args(argv)
 
     # Applied before any command runs, so every path in this process resolves
     # from the file the caller chose.
