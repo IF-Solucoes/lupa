@@ -897,6 +897,15 @@ def command_sheet(args):
         sys.exit(f"\n✋ --limit {args.limit} is more than a sheet holds "
                  f"({sheet.MAX_CELLS}) — lower it and run again\n")
 
+    # Also refused up front, before a single download runs: `--out` has no
+    # validation of its own, and folha.save() only discovers a bad extension
+    # after every candidate has already been fetched, with
+    # `ValueError: unknown file extension:` as the only trace of why.
+    if Path(args.out).suffix.lower() not in sheet.VALID_EXTENSIONS:
+        sys.exit(f"\n✋ --out {args.out!r} has no image extension lupa can "
+                 f"write ({', '.join(sheet.VALID_EXTENSIONS)}) — rename it "
+                 "and run again\n")
+
     env = config.environment()
     root = config.resolve_index_root(os.environ, env)
     collection = Path(root) / args.collection

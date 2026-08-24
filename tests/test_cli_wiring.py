@@ -167,6 +167,26 @@ class TestSheetGuards(unittest.TestCase):
         self.assertNotIn("--limit", printed)
         self.assertIn("no index at", printed)
 
+    def test_an_out_path_with_no_writable_extension_is_refused_up_front(self):
+        """Regression (I2): `--out` had no validation of its own, so
+        `--out folha` paid for every download in the query and only then died
+        inside Pillow with `ValueError: unknown file extension:`. Checked here
+        it must fire before the missing-index message too, proving it runs
+        ahead of any network -- no index exists for "cvn" in this test.
+        """
+        code, printed = self.run_sheet("--out", str(self.home / "folha"))
+        self.assertNotEqual(0, code)
+        self.assertNotIn("Traceback", printed)
+        self.assertIn("--out", printed)
+        self.assertNotIn("no index at", printed)
+
+    def test_an_out_path_with_a_known_extension_is_not_refused_by_the_guard(self):
+        """Anti-tautology: a valid extension must not trip the new guard."""
+        code, printed = self.run_sheet("--out", str(self.home / "f.png"))
+        self.assertNotEqual(0, code)
+        self.assertNotIn("--out", printed)
+        self.assertIn("no index at", printed)
+
     def test_a_collection_never_indexed_names_the_path_it_looked_for(self):
         code, printed = self.run_sheet()
         self.assertNotEqual(0, code)

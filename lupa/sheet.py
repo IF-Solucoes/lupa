@@ -25,6 +25,11 @@ MISSING_COLOR = (200, 60, 60)
 # is a candidate nobody knows they never saw.
 MAX_CELLS = 24
 
+# What folha.save() below can actually write. Checked by the CLI before a
+# single request runs -- `--out folha` used to pay for every download and
+# only then die inside Pillow with `ValueError: unknown file extension:`.
+VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
 
 def layout(count, cell=CELL_PX, pad=PAD_PX, label=LABEL_PX):
     """Columns, rows, one (x, y) per item, and the sheet size."""
