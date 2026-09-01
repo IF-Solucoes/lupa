@@ -46,6 +46,21 @@ def classify(meta):
     width, height = int(meta["w"]), int(meta["h"])
     exif = meta.get("exif") or {}
 
+    # A dimension can still be missing here: Drive omits imageMediaMetadata for
+    # some files, and _fill_dimensions() only recovers it when Pillow is
+    # installed and the bytes decode. Unknown geometry is a gap in one field —
+    # it must never fail the image, which is what dividing by a zero height did
+    # to an entire collection of 181.
+    if not width or not height:
+        return {
+            "w": width, "h": height,
+            "aspect": None,
+            "orientation": None,
+            "source": "camera" if (exif.get("Make") or exif.get("Model")) else "generated",
+            "kind": None,
+            "medium": None,
+        }
+
     return {
         "w": width, "h": height,
         "aspect": _aspect(width, height),
