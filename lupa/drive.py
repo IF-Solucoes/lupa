@@ -130,8 +130,33 @@ def connect(client_secret, token_path, with_credentials=False):
         # so it is the encoding to write it in.
         token_path.write_text(credentials.to_json(), encoding="utf-8")
 
-    service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    service = build("drive", "v3", credentials=credentials, cache_discovery=False,
+                    requestBuilder=request_builder_for(credentials))
     return (service, credentials) if with_credentials else service
+
+
+def request_builder_for(credentials):
+    """One Http per request, because httplib2 is not thread-safe.
+
+    The describe pipeline downloads with a ThreadPoolExecutor. Sharing the one
+    Http that build() makes by default put two threads on the same SSL socket,
+    which corrupts memory inside OpenSSL and killed the process with a
+    segmentation fault — no Python traceback, because the fault is native and
+    lands below the interpreter. It read as a crash on a different image every
+    run, since a race depends on timing and not on the file, and it took a whole
+    archive down four times before a faulthandler dump named ssl.py.
+
+    This is the shape Google documents for driving the API client from threads.
+    """
+    import google_auth_httplib2
+    import httplib2
+    from googleapiclient.http import HttpRequest
+
+    def build_request(_unused_http, *args, **kwargs):
+        fresh = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http())
+        return HttpRequest(fresh, *args, **kwargs)
+
+    return build_request
 
 
 def _list_page(service, query, fields):
