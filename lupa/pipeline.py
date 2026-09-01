@@ -97,6 +97,33 @@ def _load_catalog(index_dir):
     return stored
 
 
+def _fill_dimensions(raw, data):
+    """Recovers width and height from the bytes when Drive did not report them.
+
+    Drive fills imageMediaMetadata only for files it has processed, and not for
+    every file — on one real collection it came back empty for all 181 images,
+    which belong to a different account than the one running lupa.
+    normalize_file() turned the missing field into 0, classify() then divided
+    width by height, and EVERY image failed with "division by zero", leaving the
+    index empty. The bytes are already downloaded and already decoded for the
+    thumbnail, so reading the real size here costs nothing.
+    """
+    if raw.get("w") and raw.get("h"):
+        return
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            raw["w"], raw["h"] = image.size
+    except Exception:
+        return
+
+
 def _keep_thumbnail(index_dir, item_id, data):
     """Stores a small copy for the contact sheets. Silent no-op without Pillow."""
     try:
@@ -132,6 +159,7 @@ def _describe_many(source, describe, index_dir, raw_by_id, ids, workers):
     def one(file_id):
         raw = raw_by_id[file_id]
         image, mime = source.fetch(file_id)
+        _fill_dimensions(raw, image)
         _keep_thumbnail(index_dir, file_id, image)
         return file_id, describe(raw, image, mime)
 
