@@ -136,25 +136,47 @@ def connect(client_secret, token_path, with_credentials=False):
 
 
 def request_builder_for(credentials):
-    """One Http per request, because httplib2 is not thread-safe.
+    """One Http per THREAD: never shared, always reused.
 
-    The describe pipeline downloads with a ThreadPoolExecutor. Sharing the one
-    Http that build() makes by default put two threads on the same SSL socket,
-    which corrupts memory inside OpenSSL and killed the process with a
-    segmentation fault — no Python traceback, because the fault is native and
-    lands below the interpreter. It read as a crash on a different image every
-    run, since a race depends on timing and not on the file, and it took a whole
-    archive down four times before a faulthandler dump named ssl.py.
+    Two failures shaped this, and only holding both at once gives the right
+    answer.
 
-    This is the shape Google documents for driving the API client from threads.
+    Sharing the single Http that build() makes by default puts two threads on
+    the same SSL socket. That corrupts memory inside OpenSSL and kills the
+    process with a segmentation fault — no Python traceback, because the fault
+    is native and lands below the interpreter. It reads as a crash on a
+    different image every run, since a race depends on timing and not on the
+    file.
+
+    The obvious answer, a fresh Http per request, fixes that and then fails a
+    different way at scale. Every request opens a new TLS connection, and
+    Windows holds each closed socket in TIME_WAIT for two minutes; ~6000 images
+    exhausted the ephemeral port range and the run died with 5843 connection
+    resets and, unmistakably, DNS failures for www.googleapis.com. A 181-image
+    collection never shows it. A real archive does.
+
+    Per-thread is what satisfies both: no two threads ever touch one Http, and
+    the pool opens as many connections as it has workers instead of as many as
+    there are images.
     """
+    import threading
+
     import google_auth_httplib2
     import httplib2
     from googleapiclient.http import HttpRequest
 
+    owned = threading.local()
+
+    def http_for_this_thread():
+        existing = getattr(owned, "http", None)
+        if existing is None:
+            existing = google_auth_httplib2.AuthorizedHttp(
+                credentials, http=httplib2.Http())
+            owned.http = existing
+        return existing
+
     def build_request(_unused_http, *args, **kwargs):
-        fresh = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http())
-        return HttpRequest(fresh, *args, **kwargs)
+        return HttpRequest(http_for_this_thread(), *args, **kwargs)
 
     return build_request
 
